@@ -1,0 +1,39 @@
+{
+  "name": "mcp-session-threads",
+  "version": "1.0.0",
+  "description": "An MCP server that turns an agent's review/decision loops into a browser board of threads you answer at your own pace — one stable local URL, a fresh board per project.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-review",
+    "agent",
+    "claude",
+    "human-in-the-loop"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mcp-session-threads": "src/mcp.js"
+  },
+  "exports": {
+    ".": "./src/mcp.js"
+  },
+  "files": [
+    "src",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/mcp.js",
+    "daemon": "node src/daemon.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  }
+}

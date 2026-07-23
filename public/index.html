@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Session Threads</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --panel-2: #f0f2f5;
+        --border: #e2e5ea;
+        --text: #1c2430;
+        --muted: #6b7684;
+        --accent: #2f6feb;
+        --accent-weak: #e6efff;
+        --green: #1f9d55;
+        --amber: #c47f00;
+        --red: #d64545;
+        --shadow: 0 1px 3px rgba(20, 30, 50, 0.08), 0 4px 16px rgba(20, 30, 50, 0.06);
+        --notes-w: 340px;
+        --header-h: 54px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1216;
+          --panel: #181c22;
+          --panel-2: #12161b;
+          --border: #262d36;
+          --text: #e7ecf2;
+          --muted: #8a97a6;
+          --accent: #4f8bff;
+          --accent-weak: #17263f;
+          --green: #37c26b;
+          --amber: #e0a020;
+          --red: #ff6b6b;
+          --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.35);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      /* ---- header ---- */
+      header {
+        position: sticky; top: 0; z-index: 30; height: var(--header-h);
+        display: flex; align-items: center; gap: 12px; padding: 0 20px;
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+      }
+      header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); transition: background 0.3s; }
+      .dot.live { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 25%, transparent); }
+      .spacer { flex: 1; }
+      .counts { color: var(--muted); font-size: 13px; }
+      .agent-activity { color: var(--amber); font-size: 13px; font-weight: 550; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .progressbar { position: sticky; top: var(--header-h); z-index: 29; height: 4px; background: var(--panel-2); display: flex; }
+      .pb-replied { height: 100%; background: color-mix(in srgb, var(--accent) 55%, transparent); transition: width 0.3s; }
+      .pb-done { height: 100%; background: var(--green); transition: width 0.3s; }
+      .iconbtn { background: none; border: 1px solid transparent; border-radius: 7px; cursor: pointer; font-size: 15px; padding: 2px 6px; }
+      .iconbtn:hover { border-color: var(--border); }
+
+      /* ---- layout ---- */
+      .app { display: flex; align-items: flex-start; }
+      #main { flex: 1; min-width: 0; padding: 20px 24px 80px; margin-right: var(--notes-w); }
+      .notes {
+        position: fixed; top: var(--header-h); right: 0; bottom: 0; width: var(--notes-w);
+        display: flex; flex-direction: column; padding: 16px; gap: 10px;
+        background: var(--panel-2); border-left: 1px solid var(--border); z-index: 20;
+      }
+      .notes-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 700; }
+      .notes textarea { flex: 1; width: 100%; resize: none; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+      .notes textarea:focus { outline: none; border-color: var(--accent); }
+      .notes-hint { font-size: 12px; color: var(--muted); }
+      .submit-zone { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+      .submit-zone .progress { font-size: 13px; color: var(--muted); }
+      .submit-zone.ready { margin: -16px; margin-top: 0; padding: 14px 16px; background: color-mix(in srgb, var(--green) 12%, var(--panel-2)); border-top: 1px solid color-mix(in srgb, var(--green) 40%, var(--border)); }
+      .submit-zone.ready .progress { color: var(--green); font-weight: 650; }
+
+      .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 22px 4px 10px; font-weight: 650; }
+      .section-title:first-child { margin-top: 4px; }
+      .empty { color: var(--muted); text-align: center; padding: 40px; }
+
+      /* ---- cards / rows ---- */
+      .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; box-shadow: var(--shadow); transition: opacity 0.15s, border-color 0.15s; }
+      .card.resolved { opacity: 0.55; }
+      .card.replied { opacity: 0.62; }
+      .card.replied:hover { opacity: 0.9; }
+      .card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent), var(--shadow); opacity: 1; }
+      .keyhint { font-size: 12px; color: var(--muted); margin: 0 4px 12px; }
+      .keyhint kbd { font-family: ui-monospace, Menlo, monospace; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+      .row-head { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+      .row-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 9px; }
+      .dot-slot { width: 8px; flex: none; display: flex; align-self: center; }
+      .rtitle { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; }
+      .list-inner { max-width: 720px; margin: 0 auto; }
+      .chip.working { background: color-mix(in srgb, var(--amber) 18%, var(--panel-2)); color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border)); }
+      .chip.agentdone { background: color-mix(in srgb, var(--accent) 14%, var(--panel-2)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); }
+      .preview { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
+      .new-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); flex: none; }
+      .chev { color: var(--muted); flex: none; }
+
+      /* ---- badges / tags / chips ---- */
+      .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; flex: none; }
+      .badge.you { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--border)); }
+      .mtags { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+      .badge.tag-red { color: var(--red); border-color: color-mix(in srgb, var(--red) 42%, var(--border)); background: color-mix(in srgb, var(--red) 8%, transparent); }
+      .badge.tag-amber { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 42%, var(--border)); background: color-mix(in srgb, var(--amber) 8%, transparent); }
+      .badge.tag-blue { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+      .badge.tag-green { color: var(--green); border-color: color-mix(in srgb, var(--green) 42%, var(--border)); background: color-mix(in srgb, var(--green) 8%, transparent); }
+      .badge.tag-muted { color: var(--muted); }
+      .badge.tag-default { color: var(--muted); border-style: dashed; }
+      .chip { font-size: 11px; font-weight: 650; padding: 2px 9px; border-radius: 999px; white-space: nowrap; flex: none; }
+      .chip.replied { background: color-mix(in srgb, var(--green) 18%, var(--panel-2)); color: var(--green); border: 1px solid color-mix(in srgb, var(--green) 40%, var(--border)); }
+      .chip.resolved { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+
+      /* ---- summary ---- */
+      .summary { border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+      .summary-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--accent); font-weight: 700; margin-bottom: 6px; }
+
+      /* ---- done banner ---- */
+      .done-banner { display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin-bottom: 14px; border-radius: 12px; background: color-mix(in srgb, var(--green) 12%, var(--panel)); border: 1px solid color-mix(in srgb, var(--green) 40%, var(--border)); }
+      .done-banner .txt { flex: 1; font-weight: 600; color: var(--green); }
+
+      /* ---- detail view ---- */
+      .detail-nav { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+      .detail-nav .pos { color: var(--muted); font-size: 13px; }
+      .detail-nav .spacer { flex: 1; }
+      .detail-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 22px; box-shadow: var(--shadow); max-width: 780px; margin: 0 auto; }
+      .detail-title { font-size: 20px; font-weight: 680; margin: 10px 0 0; }
+      .detail-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); }
+
+      .gutter-btn { position: fixed; top: 50%; transform: translateY(-50%); z-index: 15; width: 46px; height: 92px; border-radius: 12px; border: 1px solid var(--border); background: color-mix(in srgb, var(--panel) 85%, transparent); color: var(--muted); font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); backdrop-filter: blur(4px); }
+      .gutter-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+      .gutter-btn:disabled { opacity: 0.3; cursor: default; }
+      .gutter-prev { left: 12px; }
+      .gutter-next { right: calc(var(--notes-w) + 16px); }
+      .gutter-btn[hidden] { display: none; }
+
+      /* ---- chat (detail) ---- */
+      #main.detail { height: calc(100vh - var(--header-h)); padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+      .chat-top { display: flex; align-items: center; gap: 10px; padding: 8px 64px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+      .chat-title { font-size: 16px; font-weight: 680; margin: 0; flex: 1 1 200px; min-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .chat-inner .detail-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+      .chat-scroll { flex: 1; overflow-y: auto; padding: 20px 64px; }
+      .chat-inner { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+      .chat-inner .bubble { max-width: 80%; }
+      /* agent messages read as the main content: full column width, flush left */
+      .chat-inner .bubble.agent { max-width: 100%; align-self: stretch; }
+      .chat-composer { border-top: 1px solid var(--border); background: var(--panel-2); padding: 12px 64px; }
+      .composer-inner { max-width: 820px; margin: 0 auto; }
+      .composer-inner .actions { margin-bottom: 10px; }
+      .composer-input { display: flex; gap: 10px; align-items: flex-end; }
+      .composer-input textarea { flex: 1; font: inherit; padding: 9px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel); color: var(--text); resize: none; min-height: 40px; max-height: 240px; line-height: 1.5; transition: height 0.12s ease; }
+      .composer-input textarea.collapsed { height: 40px; }
+      .composer-input textarea:focus { outline: none; border-color: var(--accent); }
+      .composer-meta { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
+      .composer-meta .composer-hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+      .composer-collapsed { display: flex; align-items: center; gap: 12px; }
+      .composer-collapsed .pending-note { color: var(--muted); font-size: 13px; }
+      .pending-bubble { align-self: flex-end; max-width: 80%; padding: 8px 12px; border-radius: 14px; border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--border)); background: color-mix(in srgb, var(--accent) 9%, transparent); border-bottom-right-radius: 5px; cursor: pointer; }
+      .pending-bubble:hover { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+      .pending-cap { display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--amber); margin-bottom: 3px; }
+      .reopen-note { align-self: center; font-size: 12px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; margin: 4px 0; }
+      .inline-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; align-self: flex-end; margin-top: 2px; }
+      .inline-actions-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+
+      /* ---- bubbles ---- */
+      .bubbles { margin: 14px 0 0; border-top: 1px dashed var(--border); padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+      .bubble { max-width: 85%; padding: 8px 12px; border-radius: 14px; border: 1px solid var(--border); }
+      .bubble .who { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 3px; }
+      .bubble.agent { align-self: flex-start; background: var(--panel-2); border-bottom-left-radius: 5px; }
+      .bubble.user { align-self: flex-end; background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); border-bottom-right-radius: 5px; }
+      .bubble.user .who { color: var(--green); }
+
+      /* ---- reply controls ---- */
+      .reply { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
+      .reply-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 650; margin-bottom: 8px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+      .qbtn { font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; padding: 7px 13px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); transition: all 0.12s; }
+      .qbtn:hover { border-color: var(--accent); }
+      .qbtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .reply textarea { width: 100%; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); resize: vertical; margin-top: 10px; }
+      .reply textarea:focus { outline: none; border-color: var(--accent); }
+      .reply-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+      .resolve-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+      .reply-row .spacer { flex: 1; }
+      .saved-flag { color: var(--green); font-size: 13px; font-weight: 600; }
+
+      .btn { font: inherit; font-weight: 600; cursor: pointer; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+      .btn:hover { border-color: var(--accent); }
+      .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .btn.ghost { background: none; }
+      .btn.small { padding: 5px 11px; font-size: 13px; }
+      .btn:disabled { opacity: 0.5; cursor: default; }
+      .btn.primary.big { padding: 11px; font-size: 15px; width: 100%; }
+
+      /* ---- markdown ---- */
+      .md > :first-child { margin-top: 0; }
+      .md > :last-child { margin-bottom: 0; }
+      .md p { margin: 6px 0; }
+      .md h3, .md h4, .md h5, .md h6 { margin: 10px 0 4px; font-size: 14px; font-weight: 650; }
+      .md ul, .md ol { margin: 6px 0; padding-left: 20px; }
+      .md li { margin: 2px 0; }
+      .md a { color: var(--accent); text-decoration: none; }
+      .md a:hover { text-decoration: underline; }
+      .md blockquote { border-left: 3px solid var(--border); margin: 6px 0; padding: 2px 10px; color: var(--muted); }
+      .md hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
+      .md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; background: color-mix(in srgb, var(--muted) 16%, transparent); border: 1px solid var(--border); border-radius: 5px; padding: 0.5px 4px; }
+      .md pre { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+      .md pre code { background: none; border: 0; padding: 0; font-size: 12.5px; white-space: pre; }
+      .md table { border-collapse: collapse; margin: 8px 0; font-size: 13px; display: block; overflow-x: auto; }
+      .md th, .md td { border: 1px solid var(--border); padding: 4px 9px; text-align: left; }
+      .md th { background: var(--panel-2); font-weight: 650; }
+
+      .toast { position: fixed; top: 66px; left: 50%; transform: translateX(-50%); background: var(--green); color: #fff; padding: 10px 18px; border-radius: 10px; box-shadow: var(--shadow); font-size: 14px; z-index: 40; opacity: 0; transition: opacity 0.25s; pointer-events: none; }
+      .toast.show { opacity: 1; }
+
+      @media (max-width: 820px) {
+        #main { margin-right: 0; padding-bottom: 20px; }
+        .notes { position: static; width: auto; top: auto; }
+        .gutter-btn { display: none; }
+        #main.detail { height: auto; overflow: visible; padding-bottom: 20px; }
+        .chat-top, .chat-header, .chat-scroll, .chat-composer { padding-left: 16px; padding-right: 16px; }
+        .chat-scroll { overflow: visible; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="dot" id="dot"></span>
+      <h1>Session Threads</h1>
+      <span class="agent-activity" id="agentActivity"></span>
+      <span class="spacer"></span>
+      <span class="counts" id="counts"></span>
+      <button class="iconbtn" id="soundBtn" title="Sound notification when the agent finishes">🔕</button>
+    </header>
+    <div class="progressbar" id="progressbar"><div class="pb-replied" id="pbReplied"></div><div class="pb-done" id="pbDone"></div></div>
+
+    <div class="app">
+      <main id="main"></main>
+      <aside class="notes">
+        <div class="notes-title">Other notes</div>
+        <textarea id="newNotes" placeholder="Dump unrelated thoughts here anytime — questions or tasks not tied to a thread. The agent sorts these into new threads on submit."></textarea>
+        <div class="notes-hint">Kept for this session; sent with your feedback on submit.</div>
+        <div class="submit-zone" id="submitZone">
+          <div class="progress" id="progress"></div>
+          <button class="btn primary big" id="submitBtn">Submit feedback</button>
+        </div>
+      </aside>
+    </div>
+
+    <button class="gutter-btn gutter-prev" id="gutterPrev" hidden>‹</button>
+    <button class="gutter-btn gutter-next" id="gutterNext" hidden>›</button>
+
+    <div class="toast" id="toast"></div>
+
+    <script type="module">
+      import { mdToHtml, stripMd, escapeHtml } from '/markdown.js';
+      const DEFAULT_ACTIONS = ['Fix', 'Approve'];
+      const CARD_MSG_LIMIT = 3;
+      // Board id from the /b/<id> path; all API calls are scoped to it.
+      const BOARD = (location.pathname.match(/\/b\/([\w-]+)/) || [])[1] || '';
+      const API = BOARD ? '/api/b/' + BOARD : '/api';
+
+      let state = { version: -1, threads: [], summary: '' };
+      let firstLoad = true;
+      const drafts = {}; // id -> { action, text, resolve, saved }
+      const edit = {}; // id -> true when the pending reply bubble is being edited
+      const seen = {};
+      let notes = '';
+      let selIndex = 0; // keyboard-highlighted row in the list (index into open threads)
+      let wantFocus = false; // focus the composer on the next detail render (set by mouse nav / the `e` key, NOT j/k)
+
+      const LS_DRAFTS = 'rt-drafts';
+      const LS_NOTES = 'rt-notes';
+
+      const $ = (id) => document.getElementById(id);
+      const esc = escapeHtml;
+      const actionsFor = (t) => (Array.isArray(t.actions) ? t.actions : DEFAULT_ACTIONS);
+      const tagsFor = (t) => (Array.isArray(t.tags) ? t.tags : []);
+      const ts = (t) => t.updatedAt || t.createdAt || '';
+      const byFreshest = (a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : 0);
+      const openThreads = () => state.threads.filter((t) => t.status !== 'resolved').sort(byFreshest);
+
+      function draftFor(id) {
+        if (!drafts[id]) drafts[id] = { action: null, text: '', resolve: false, saved: false };
+        return drafts[id];
+      }
+      const hasContent = (d) => !!(d && (d.action || (d.text && d.text.trim()) || d.resolve));
+      const isReplied = (t) => { const d = drafts[t.id]; return !!(d && d.saved && hasContent(d)); };
+
+      function persistDrafts() { try { localStorage.setItem(LS_DRAFTS, JSON.stringify(drafts)); } catch {} }
+      function persistNotes() { try { localStorage.setItem(LS_NOTES, notes); } catch {} }
+      function loadPersisted() {
+        try { Object.assign(drafts, JSON.parse(localStorage.getItem(LS_DRAFTS) || '{}')); } catch {}
+        notes = localStorage.getItem(LS_NOTES) || '';
+      }
+
+      function markSeen(id) { const t = state.threads.find((x) => x.id === id); if (t) seen[id] = t.updatedAt; }
+      function hasUpdate(t) {
+        const s = seen[t.id];
+        if (s === undefined) return true;
+        if (t.updatedAt <= s) return false;
+        const last = t.messages[t.messages.length - 1];
+        return !last || last.author === 'agent';
+      }
+
+      // markdown (mdToHtml / stripMd / escapeHtml) imported at top from /markdown.js
+      function previewText(t) { const last = t.messages[t.messages.length - 1]; return stripMd(last ? last.text : t.body); }
+
+      function tagClass(tag) {
+        const s = tag.toLowerCase();
+        if (/(crit|block|high|urgent|error|\bbug\b|fail|danger|sec)/.test(s)) return 'tag-red';
+        if (/(med|warn|moderate|todo)/.test(s)) return 'tag-amber';
+        if (/(low|minor|nit|info|note|trivial)/.test(s)) return 'tag-muted';
+        if (/(question|ask|decide|discuss|clarif)/.test(s)) return 'tag-blue';
+        if (/(good|approve|pass|done|resolved|ok|lgtm|nice)/.test(s)) return 'tag-green';
+        return 'tag-default';
+      }
+      function renderTags(host, t) {
+        for (const tag of tagsFor(t)) { const b = document.createElement('span'); b.className = 'badge ' + tagClass(tag); b.textContent = tag; host.appendChild(b); }
+      }
+      function bubbleEl(m) {
+        const b = document.createElement('div');
+        b.className = 'bubble ' + (m.author === 'user' ? 'user' : 'agent');
+        const who = document.createElement('span'); who.className = 'who'; who.textContent = m.author === 'user' ? 'you' : 'agent';
+        const tx = document.createElement('div'); tx.className = 'txt md'; tx.innerHTML = mdToHtml(m.text);
+        b.append(who, tx); return b;
+      }
+
+      // ---- routing ----
+      function route() { const m = location.hash.match(/^#\/t\/([\w-]+)/); return m ? { name: 'detail', id: m[1] } : { name: 'list' }; }
+      const go = (h) => { if (location.hash === h) render(); else location.hash = h; };
+      const openThread = (id, focus) => { wantFocus = !!focus; go('#/t/' + id); };
+      const goList = () => go('#/');
+
+      // ---- list view ----
+      function threadRow(t) {
+        const resolved = t.status === 'resolved';
+        const replied = isReplied(t);
+        const card = document.createElement('div');
+        card.className = 'card' + (resolved ? ' resolved' : '') + (replied ? ' replied' : '');
+        const head = document.createElement('div'); head.className = 'row-head';
+
+        const main = document.createElement('div'); main.className = 'row-main';
+        const dotSlot = document.createElement('span'); dotSlot.className = 'dot-slot';
+        if (!replied && !resolved && hasUpdate(t)) { const dot = document.createElement('span'); dot.className = 'new-dot'; dot.title = 'New update'; dotSlot.appendChild(dot); }
+        const title = document.createElement('span'); title.className = 'rtitle'; title.textContent = t.title;
+        main.append(dotSlot, title); head.appendChild(main);
+
+        // agent progress indicators (tags & message-preview intentionally omitted from the dashboard)
+        if (state.agent && state.agent.currentThreadId === t.id && !resolved) head.appendChild(chip('⚙ working', 'working'));
+        else if (t.work === 'done' && !replied) head.appendChild(chip('✓ done', 'agentdone'));
+        if (resolved) head.appendChild(chip('resolved', 'resolved'));
+        else if (replied) head.appendChild(chip('✓ ' + (drafts[t.id].action || 'replied'), 'replied'));
+
+        const chev = document.createElement('span'); chev.className = 'chev'; chev.textContent = '›'; head.appendChild(chev);
+        head.onclick = () => openThread(t.id, true);
+        card.appendChild(head);
+        return card;
+      }
+      function chip(text, cls) { const c = document.createElement('span'); c.className = 'chip ' + cls; c.textContent = text; return c; }
+
+      function renderList(main) {
+        const inner = document.createElement('div'); inner.className = 'list-inner';
+        main.appendChild(inner);
+        if (state.summary && state.summary.trim()) {
+          const s = document.createElement('div'); s.className = 'card summary';
+          s.innerHTML = `<div class="summary-label">Summary</div><div class="md">${mdToHtml(state.summary)}</div>`;
+          inner.appendChild(s);
+        }
+        maybeDoneBanner(inner);
+        const open = openThreads();
+        const remaining = open.filter((t) => !isReplied(t)).length;
+        const st = document.createElement('div'); st.className = 'section-title'; st.textContent = `Threads${remaining ? ` — ${remaining} to review` : ''}`;
+        inner.appendChild(st);
+        if (!open.length) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'Nothing open. New review threads will show up here.'; inner.appendChild(e); }
+        else {
+          selIndex = Math.max(0, Math.min(selIndex, open.length - 1));
+          const hint = document.createElement('div'); hint.className = 'keyhint';
+          hint.innerHTML = '<kbd>k</kbd> next · <kbd>j</kbd> prev · <kbd>Enter</kbd>/<kbd>e</kbd> open · <kbd>r</kbd> resolve · in a thread: <kbd>h</kbd>/<kbd>l</kbd> scroll, <kbd>Esc</kbd> leave';
+          inner.appendChild(hint);
+          open.forEach((t, i) => { const row = threadRow(t); if (i === selIndex) row.classList.add('sel'); inner.appendChild(row); });
+        }
+
+        const resolved = state.threads.filter((t) => t.status === 'resolved').sort(byFreshest);
+        if (resolved.length) { const rt = document.createElement('div'); rt.className = 'section-title'; rt.textContent = 'Resolved'; inner.appendChild(rt); for (const t of resolved) inner.appendChild(threadRow(t)); }
+      }
+
+      // ---- detail view ----
+      function renderDetail(main, id) {
+        const t = state.threads.find((x) => x.id === id);
+        if (!t) { goList(); return; }
+        markSeen(id);
+        main.classList.add('detail');
+        const open = openThreads();
+        const idx = open.findIndex((x) => x.id === id);
+        if (idx >= 0) selIndex = idx; // keep list selection in sync
+        const d = draftFor(id);
+
+        // Compact top bar: back + title share one line when there's room, then
+        // position + prev/next. Keeps the fixed header short so the chat history
+        // gets maximum vertical space.
+        const top = document.createElement('div'); top.className = 'chat-top';
+        const back = document.createElement('button'); back.className = 'btn ghost small'; back.textContent = '← All threads'; back.onclick = goList; top.appendChild(back);
+        const h = document.createElement('h2'); h.className = 'chat-title'; h.textContent = t.title; top.appendChild(h);
+        if (idx >= 0) { const pos = document.createElement('span'); pos.className = 'pos'; pos.textContent = `${idx + 1}/${open.length}`; top.appendChild(pos); }
+        const prevBtn = document.createElement('button'); prevBtn.className = 'btn small'; prevBtn.textContent = '‹'; prevBtn.title = 'Previous (j)'; prevBtn.disabled = idx <= 0; prevBtn.onclick = () => goRel(-1, true); top.appendChild(prevBtn);
+        const nextBtn = document.createElement('button'); nextBtn.className = 'btn small'; nextBtn.textContent = '›'; nextBtn.title = 'Next (k)'; nextBtn.disabled = idx < 0 || idx >= open.length - 1; nextBtn.onclick = () => goRel(1, true); top.appendChild(nextBtn);
+        main.appendChild(top);
+
+        const scroll = document.createElement('div'); scroll.className = 'chat-scroll';
+        const inner = document.createElement('div'); inner.className = 'chat-inner';
+        // tags now scroll with the history (not pinned), so they don't eat vertical space
+        if (tagsFor(t).length || t.createdBy === 'user') {
+          const dh = document.createElement('div'); dh.className = 'detail-head';
+          if (t.createdBy === 'user') { const y = document.createElement('span'); y.className = 'badge you'; y.textContent = 'you'; dh.appendChild(y); }
+          renderTags(dh, t);
+          const idEl = document.createElement('span'); idEl.className = 'id'; idEl.textContent = t.id; dh.appendChild(idEl);
+          inner.appendChild(dh);
+        }
+        if (t.body) inner.appendChild(chatBubble('agent', mdToHtml(t.body)));
+        for (const m of t.messages) inner.appendChild(bubbleEl(m));
+        const showPending = d.saved && hasContent(d) && !edit[id] && t.status !== 'resolved';
+        const editingThis = !!edit[id];
+        if (showPending) inner.appendChild(pendingBubble(t, d));
+        // Fresh state (no staged reply, not editing): inline the quick replies into
+        // the history (click sends immediately) so the composer stays minimal.
+        else if (t.status !== 'resolved' && !editingThis && actionsFor(t).length) inner.appendChild(inlineActions(t));
+        scroll.appendChild(inner);
+        main.appendChild(scroll);
+
+        if (t.status === 'resolved') {
+          const n = document.createElement('div'); n.className = 'reopen-note'; n.textContent = 'Resolved — replying below reopens this thread.'; inner.appendChild(n);
+          main.appendChild(composer(t, idx, open, true));
+        } else if (showPending) {
+          const foot = document.createElement('div'); foot.className = 'chat-composer';
+          const ci = document.createElement('div'); ci.className = 'composer-inner composer-collapsed';
+          const info = document.createElement('span'); info.className = 'pending-note'; info.textContent = 'Reply staged (pending) — click the bubble to edit.';
+          const editBtn = document.createElement('button'); editBtn.className = 'btn small'; editBtn.textContent = 'Edit reply'; editBtn.onclick = () => { wantFocus = true; edit[id] = true; render(); };
+          ci.append(info, editBtn);
+          if (idx >= 0 && idx < open.length - 1) { const nb = document.createElement('button'); nb.className = 'btn small primary'; nb.textContent = 'Next ›'; nb.onclick = () => goRel(1, true); ci.appendChild(nb); }
+          foot.appendChild(ci); main.appendChild(foot);
+        } else {
+          // chips only in the composer while EDITING; otherwise they live inline above
+          main.appendChild(composer(t, idx, open, editingThis));
+        }
+
+        // Focus synchronously (only when a mouse nav / the `e` key asked for it);
+        // never on j/k sweeps or background re-renders.
+        if (wantFocus) {
+          const ta = main.querySelector('.composer-input textarea');
+          if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
+        }
+        wantFocus = false;
+
+        requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+      }
+
+      function chatBubble(author, html) {
+        const b = document.createElement('div'); b.className = 'bubble ' + author;
+        const who = document.createElement('span'); who.className = 'who'; who.textContent = author === 'user' ? 'you' : 'agent';
+        const tx = document.createElement('div'); tx.className = 'txt md'; tx.innerHTML = html;
+        b.append(who, tx); return b;
+      }
+
+      function replyText(d) {
+        const parts = [];
+        if (d.action) parts.push('**' + d.action + '**');
+        const t = (d.text || '').trim(); if (t) parts.push(t);
+        let s = parts.join(' — ');
+        if (d.resolve) s += (s ? '\n\n' : '') + '_marks thread resolved_';
+        return s || '_(empty)_';
+      }
+
+      function pendingBubble(t, d) {
+        const b = document.createElement('div'); b.className = 'pending-bubble'; b.title = 'Click to edit';
+        const cap = document.createElement('div'); cap.className = 'pending-cap'; cap.textContent = '◷ you · pending';
+        const tx = document.createElement('div'); tx.className = 'txt md'; tx.innerHTML = mdToHtml(replyText(d));
+        b.append(cap, tx);
+        b.onclick = () => { wantFocus = true; edit[t.id] = true; render(); };
+        return b;
+      }
+
+      // inline quick replies shown in the chat history (fresh state) — a click
+      // stages AND sends immediately; the pending bubble is editable afterwards.
+      function inlineActions(t) {
+        const wrap = document.createElement('div'); wrap.className = 'inline-actions';
+        const lbl = document.createElement('span'); lbl.className = 'inline-actions-label'; lbl.textContent = 'Quick reply';
+        wrap.appendChild(lbl);
+        for (const label of actionsFor(t)) {
+          const b = document.createElement('button'); b.className = 'qbtn'; b.textContent = label;
+          b.onclick = () => { const d = draftFor(t.id); d.action = label; persistDrafts(); saveReply(t.id); };
+          wrap.appendChild(b);
+        }
+        return wrap;
+      }
+
+      function composer(t, idx, open, showChips) {
+        const d = draftFor(t.id);
+        const foot = document.createElement('div'); foot.className = 'chat-composer';
+        const ci = document.createElement('div'); ci.className = 'composer-inner';
+
+        const labels = actionsFor(t);
+        if (showChips && labels.length) {
+          const row = document.createElement('div'); row.className = 'actions';
+          for (const label of labels) {
+            const b = document.createElement('button'); b.className = 'qbtn' + (d.action === label ? ' active' : ''); b.textContent = label;
+            b.onclick = () => { d.action = d.action === label ? null : label; d.saved = false; persistDrafts(); render(); };
+            row.appendChild(b);
+          }
+          ci.appendChild(row);
+        }
+
+        const inputRow = document.createElement('div'); inputRow.className = 'composer-input';
+        const ta = document.createElement('textarea'); ta.rows = 1; ta.placeholder = 'Type your reply…'; ta.value = d.text;
+        // collapsed (one line) when empty & unfocused; expands on focus or text
+        const collapse = () => { ta.classList.add('collapsed'); ta.style.height = ''; };
+        const expand = () => { ta.classList.remove('collapsed'); ta.style.height = 'auto'; ta.style.height = Math.min(240, Math.max(84, ta.scrollHeight)) + 'px'; };
+        const sync = () => { (!ta.value.trim() && document.activeElement !== ta) ? collapse() : expand(); };
+        const send = document.createElement('button'); send.className = 'btn primary'; send.textContent = edit[t.id] ? 'Update' : 'Send';
+        const doSend = () => { if (!hasContent(d)) return; saveReply(t.id); };
+        ta.oninput = () => { d.text = ta.value; d.saved = false; persistDrafts(); expand(); send.disabled = !hasContent(d); updateSubmitZone(); };
+        ta.onfocus = expand;
+        ta.onblur = () => { if (!ta.value.trim()) collapse(); };
+        ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } };
+        send.disabled = !hasContent(d); send.onclick = doSend;
+        inputRow.append(ta, send);
+        ci.appendChild(inputRow);
+
+        const meta = document.createElement('div'); meta.className = 'composer-meta';
+        const cl = document.createElement('label'); cl.className = 'resolve-check';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = d.resolve;
+        cb.onchange = () => { d.resolve = cb.checked; d.saved = false; persistDrafts(); send.disabled = !hasContent(d); };
+        cl.append(cb, document.createTextNode('mark resolved')); meta.appendChild(cl);
+        const hint = document.createElement('span'); hint.className = 'composer-hint'; hint.textContent = 'Enter to send · Shift+Enter for a new line · staged as pending until you Submit'; meta.appendChild(hint);
+        ci.appendChild(meta);
+
+        foot.appendChild(ci);
+        requestAnimationFrame(() => { sync(); const s = document.querySelector('.chat-scroll'); if (s) s.scrollTop = s.scrollHeight; });
+        return foot;
+      }
+
+      function saveReply(id, quiet) {
+        const d = draftFor(id);
+        if (!hasContent(d)) return;
+        d.saved = true; edit[id] = false; persistDrafts();
+        const open = openThreads();
+        const allDone = open.length && open.every(isReplied);
+        if (!quiet) toast(allDone ? 'All threads answered — ready to submit ✓' : 'Reply staged (pending) ✓');
+        render();
+      }
+
+      function maybeDoneBanner(main) {
+        const open = openThreads();
+        if (!open.length || !open.every(isReplied)) return;
+        const b = document.createElement('div'); b.className = 'done-banner';
+        b.innerHTML = '<span class="txt">All threads answered.</span>';
+        const btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Submit feedback →'; btn.onclick = submit;
+        b.appendChild(btn); main.appendChild(b);
+      }
+
+      // ---- shared render ----
+      function rerenderMain() { render(); }
+      function render() {
+        const r = route();
+        const main = $('main'); main.innerHTML = ''; main.classList.remove('detail');
+        if (r.name === 'detail' && state.threads.find((x) => x.id === r.id)) renderDetail(main, r.id);
+        else renderList(main);
+        updateHeader();
+        updateSubmitZone();
+        updateGutter(r);
+      }
+
+      function updateHeader() {
+        const open = openThreads();
+        const total = open.length;
+        const replied = open.filter(isReplied).length;
+        const agentDone = open.filter((t) => t.work === 'done').length;
+        const resolved = state.threads.length - total;
+        $('counts').textContent = total ? `${agentDone} done · ${replied}/${total} replied` + (resolved ? ` · ${resolved} resolved` : '') : (resolved ? `${resolved} resolved` : 'no threads');
+        $('pbReplied').style.width = total ? (replied / total) * 100 + '%' : '0%';
+        $('pbDone').style.width = total ? (agentDone / total) * 100 + '%' : '0%';
+        const act = state.agent && state.agent.status === 'working' ? (state.agent.activity || 'Working…') : '';
+        $('agentActivity').textContent = act ? '⚙ ' + act : '';
+        const allReplied = total > 0 && replied === total;
+        document.title = allReplied ? `✅ ${replied}/${total} — Session Threads` : (total ? `(${replied}/${total}) Session Threads` : 'Session Threads');
+      }
+
+      // Navigate relative to the CURRENTLY open thread, computed fresh at click
+      // time from live order (fixes the stale Next button after keyboard nav).
+      function goRel(delta, focus) {
+        const r = route(); if (r.name !== 'detail') return;
+        const o = openThreads(); const i = o.findIndex((x) => x.id === r.id);
+        const n = o[i + delta]; if (n) openThread(n.id, !!focus);
+      }
+
+      function updateSubmitZone() {
+        const open = openThreads();
+        const replied = open.filter(isReplied).length;
+        const total = open.length;
+        const allDone = total > 0 && replied === total;
+        $('progress').textContent = total ? `${replied} of ${total} replied` : 'No open threads';
+        $('submitZone').classList.toggle('ready', allDone);
+        const anything = replied > 0 || notes.trim();
+        $('submitBtn').disabled = !anything;
+        $('submitBtn').textContent = allDone ? 'Submit feedback →' : 'Submit now';
+      }
+
+      function updateGutter(r) {
+        const prev = $('gutterPrev'), next = $('gutterNext');
+        if (r.name !== 'detail') { prev.hidden = true; next.hidden = true; return; }
+        const open = openThreads();
+        const idx = open.findIndex((x) => x.id === r.id);
+        prev.hidden = false; next.hidden = false;
+        prev.disabled = idx <= 0; next.disabled = idx < 0 || idx >= open.length - 1;
+        prev.onclick = () => goRel(-1, true);
+        next.onclick = () => goRel(1, true);
+      }
+
+      async function submit() {
+        const replies = [];
+        for (const t of openThreads()) {
+          const d = drafts[t.id];
+          if (d && d.saved && hasContent(d)) replies.push({ thread_id: t.id, action: d.action, text: d.text, resolve: d.resolve });
+        }
+        const payloadNotes = notes.trim();
+        if (!replies.length && !payloadNotes) return;
+        $('submitBtn').disabled = true;
+        try {
+          const res = await fetch(API + '/submit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies, notes: payloadNotes }) });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          for (const rep of replies) delete drafts[rep.thread_id];
+          notes = ''; $('newNotes').value = ''; persistDrafts(); persistNotes();
+          toast('Feedback sent to the agent ✓');
+          goList();
+        } catch (e) { toast('Submit failed: ' + e.message, true); }
+        finally { render(); }
+      }
+
+      let toastTimer;
+      function toast(msg, err) {
+        const el = $('toast'); el.textContent = msg; el.style.background = err ? 'var(--red)' : 'var(--green)';
+        el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+      }
+
+      function applyState(next) {
+        if (next.version === state.version) return;
+        const prevCount = state.threads.length;
+        const prevAgent = (state.agent && state.agent.status) || 'idle';
+        if (firstLoad) for (const t of next.threads) seen[t.id] = t.updatedAt;
+        state = next; render();
+        if (!firstLoad) {
+          if (next.threads.length > prevCount) toast('Agent posted a new thread');
+          const nowAgent = (next.agent && next.agent.status) || 'idle';
+          if (nowAgent === 'done' && prevAgent !== 'done') { toast('Agent finished ✓'); beep(); }
+        }
+        firstLoad = false;
+      }
+
+      // ---- sound (per-board toggle, default off) ----
+      const SND_KEY = 'rt-sound-' + BOARD;
+      let soundOn = localStorage.getItem(SND_KEY) === '1';
+      function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — agent-finished notification' : 'Sound off — click to enable finish notification'; }
+      function beep() {
+        if (!soundOn) return;
+        try {
+          const ac = new (window.AudioContext || window.webkitAudioContext)();
+          const o = ac.createOscillator(), g = ac.createGain();
+          o.connect(g); g.connect(ac.destination); o.type = 'sine'; o.frequency.value = 880;
+          g.gain.setValueAtTime(0.001, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.15, ac.currentTime + 0.02); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.35);
+          o.start(); o.stop(ac.currentTime + 0.36);
+        } catch {}
+      }
+
+      function connect() {
+        const es = new EventSource(API + '/events');
+        es.onopen = () => $('dot').classList.add('live');
+        es.onerror = () => $('dot').classList.remove('live');
+        es.onmessage = (ev) => { try { const m = JSON.parse(ev.data); if (m.type === 'state') applyState(m.state); } catch {} };
+      }
+      async function refresh() { try { const r = await fetch(API + '/state'); applyState(await r.json()); } catch {} }
+
+      // focus the reply input for the current thread (opening the pending
+      // reply for editing if it's collapsed into a bubble)
+      function focusComposer(id) {
+        const ta = document.querySelector('.composer-input textarea');
+        if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; return; }
+        if (id) { wantFocus = true; edit[id] = true; render(); }
+      }
+      function scrollSelIntoView() { const el = document.querySelector('.card.sel'); if (el) el.scrollIntoView({ block: 'nearest' }); }
+      function scrollChat(dir) { const s = document.querySelector('.chat-scroll'); if (s) s.scrollBy({ top: dir * Math.round(s.clientHeight * 0.5), behavior: 'smooth' }); }
+
+      // stage a resolve on a thread's reply (sent on submit); toggles
+      function toggleResolve(id) {
+        const d = draftFor(id);
+        d.resolve = !d.resolve;
+        d.saved = hasContent(d);
+        persistDrafts();
+        toast(d.resolve ? 'Marked resolved (staged for submit) ✓' : 'Resolve unmarked');
+        render();
+      }
+
+      // ---- keyboard shortcuts ----
+      // k = next thread · j = previous · h/l = scroll chat up/down · e = reply
+      // · r = resolve · Enter = open (list) / send-or-focus (thread) · Esc = leave
+      function onKey(e) {
+        const t = e.target;
+        const inField = t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable);
+        if (e.key === 'Escape') {
+          if (inField) { t.blur(); e.preventDefault(); }
+          else if (route().name === 'detail') { goList(); e.preventDefault(); }
+          return;
+        }
+        if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === 'Enter' && t && t.tagName === 'BUTTON') return; // let buttons activate
+        const r = route();
+        if (r.name === 'detail') {
+          if (e.key === 'k') { goRel(1, false); e.preventDefault(); }       // k = next (no focus steal)
+          else if (e.key === 'j') { goRel(-1, false); e.preventDefault(); }  // j = previous (no focus steal)
+          else if (e.key === 'l') { scrollChat(1); e.preventDefault(); }   // l = scroll down
+          else if (e.key === 'h') { scrollChat(-1); e.preventDefault(); }  // h = scroll up
+          else if (e.key === 'r') { toggleResolve(r.id); e.preventDefault(); }
+          else if (e.key === 'e') { focusComposer(r.id); e.preventDefault(); }
+          else if (e.key === 'Enter') {
+            const ta = document.querySelector('.composer-input textarea');
+            const d = drafts[r.id];
+            if (ta && d && hasContent(d)) saveReply(r.id); // quick reply / text -> send even if text empty
+            else focusComposer(r.id);
+            e.preventDefault();
+          }
+        } else {
+          const open = openThreads();
+          if (!open.length) return;
+          const cur = () => open[Math.max(0, Math.min(selIndex, open.length - 1))];
+          if (e.key === 'k') { selIndex = Math.min(selIndex + 1, open.length - 1); render(); scrollSelIntoView(); e.preventDefault(); }   // k = next/down
+          else if (e.key === 'j') { selIndex = Math.max(selIndex - 1, 0); render(); scrollSelIntoView(); e.preventDefault(); }            // j = prev/up
+          else if (e.key === 'r') { const th = cur(); if (th) toggleResolve(th.id); e.preventDefault(); }
+          else if (e.key === 'Enter' || e.key === 'e') { const th = cur(); if (th) openThread(th.id); e.preventDefault(); }
+        }
+      }
+
+      // ---- init ----
+      loadPersisted();
+      $('newNotes').value = notes;
+      $('newNotes').addEventListener('input', () => { notes = $('newNotes').value; persistNotes(); updateSubmitZone(); });
+      $('submitBtn').onclick = submit;
+      syncSoundBtn();
+      $('soundBtn').onclick = () => { soundOn = !soundOn; localStorage.setItem(SND_KEY, soundOn ? '1' : '0'); syncSoundBtn(); if (soundOn) beep(); };
+      window.addEventListener('hashchange', render);
+      document.addEventListener('keydown', onKey);
+      render();
+      refresh();
+      connect();
+    </script>
+  </body>
+</html>
