@@ -7,6 +7,7 @@ export const INSTRUCTIONS = [
   'ALWAYS give the user the board URL up front (get_board_url, also returned by create_thread). It is STABLE for this project and does not change across restarts.',
   'THE BOARD IS THE ONLY THING THE USER SEES for this exchange — not your terminal. Put a set_summary TL;DR on top, make each thread self-contained, and when you reply in a thread START with a one-line summary of what the user asked so they know what you are responding to.',
   'Typical flow: create_thread per finding/question (freestyle `tags` like ["finding","high"] and a few tailored `actions` like ["Fix","Approve"]), set_summary, then call wait_for_feedback ONCE — it blocks a long time and returns the moment the user submits; only call again if it returns a "no feedback yet" notice.',
+  'wait_for_feedback also returns a checklist of every thread awaiting YOUR response (the user replied, ball in your court). Address EACH one before waiting again: reply with add_message, or if no reply is warranted mark_thread_done / resolve_thread / defer_thread. A thread stays on that checklist until you do one of those — do not leave any unaddressed unless it is deferred or done.',
   'The board tracks WHOSE TURN it is so the UI can show the right progress bar and ping the user. Share progress as you act: start_working when you begin, work_on_thread(id) before a specific thread (it is highlighted), mark_thread_done(id) when finished, finish_working at the end. wait_for_feedback automatically flips the board to "your turn" (plays the user a sound) while it blocks, then back when they submit — you do not manage that state yourself.',
   'Do NOT auto-resolve threads for heavy/uncertain changes — leave them open for the user to confirm; only resolve small, clear-cut items.',
   'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore; when the moment is right, resume_thread un-parks it AND posts a message telling the user why to pick it up now.',
@@ -16,7 +17,7 @@ export const INSTRUCTIONS = [
 const ok = (text) => ({ content: [{ type: 'text', text }] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function formatFeedback(p) {
+function formatFeedback(p, outstanding = []) {
   if (p.status === 'timeout') {
     return 'No feedback submitted within the wait window. If you still expect input, call wait_for_feedback again (it blocks a long time per call; the user can stop you anytime to talk in chat).';
   }
@@ -31,8 +32,22 @@ function formatFeedback(p) {
     lines.push('', `Free-form notes (${notes.length} separate submission(s) — split each into threads with create_thread as needed):`);
     notes.forEach((n, i) => lines.push('', `— note ${i + 1}:`, '"""', typeof n === 'string' ? n : n.text, '"""'));
   }
-  lines.push('', 'When you reply in a thread, start with a one-line summary of what the user asked. Then act, and call wait_for_feedback again if you still expect input.');
+  if (outstanding.length) {
+    lines.push('', `⚠ ${outstanding.length} thread(s) are awaiting YOUR response (the ball is in your court — this includes the replies above plus any carried over from before). Address EVERY one this cycle: reply with add_message, or if no reply is warranted, mark_thread_done / resolve_thread / defer_thread. A thread only drops off this list once you reply, mark it done, resolve it, or defer it:`);
+    for (const t of outstanding) lines.push(`  • ${t.id} — "${t.title}"`);
+  }
+  lines.push('', 'When you reply in a thread, start with a one-line summary of what the user asked. Address all threads listed above, then call wait_for_feedback again if you still expect input.');
   return lines.join('\n');
+}
+
+/** Threads where the ball is in the agent's court and it hasn't been parked/finished. */
+async function gatherOutstanding(client) {
+  try {
+    const { threads } = await client.call('/threads');
+    return threads.filter((t) => t.status === 'open' && !t.deferred && t.work !== 'done' && t.lastAuthor === 'user');
+  } catch {
+    return [];
+  }
 }
 
 /** @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} mcp */
@@ -147,7 +162,7 @@ export function registerTools(mcp, client) {
             await sleep(Math.min(1000 * fails, 3000));
             continue;
           }
-          if (p.status !== 'timeout') return ok(formatFeedback(p));
+          if (p.status !== 'timeout') return ok(formatFeedback(p, await gatherOutstanding(client)));
         }
         return ok(formatFeedback({ status: 'timeout' }));
       } finally {

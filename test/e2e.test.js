@@ -138,6 +138,34 @@ test('defer_thread parks a thread; resume_thread un-parks it and posts a why-now
   assert.ok(th.messages.some((m) => m.author === 'agent' && /good time to pick this up/.test(m.text)), 'resume posts the why-now recommendation');
 });
 
+test('wait_for_feedback reminds the agent of every thread awaiting its response (except deferred/done)', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const G = makeClient('G', '/proj/remind');
+  t.after(async () => { await G.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await G.client.connect(G.transport);
+  const id = boardId(await urlOf(G.client));
+  const mk = async (title) => textOf(await G.client.callTool({ name: 'create_thread', arguments: { title } })).match(/thread (\w+)/)[1];
+  const addr = await mk('Address me'); // stays awaiting -> must be reminded
+  const done = await mk('Marked done'); // agent marks done -> hidden from reminder
+  const defer = await mk('Deferred'); // agent defers -> hidden from reminder
+  const submit = (b) => fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+
+  // user replies to all three (delivered as pending; the next wait consumes them)
+  await submit({ replies: [addr, done, defer].map((thread_id) => ({ thread_id, action: 'Look' })), notes: '' });
+  // agent parks two of them
+  await G.client.callTool({ name: 'mark_thread_done', arguments: { thread_id: done } });
+  await G.client.callTool({ name: 'defer_thread', arguments: { thread_id: defer } });
+
+  const out = textOf(await G.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
+  // assert against the CHECKLIST section only (the "Feedback received" echo lists all submitted ids)
+  assert.match(out, /awaiting YOUR response/, 'includes the outstanding checklist');
+  const checklist = out.split('awaiting YOUR response')[1] || '';
+  assert.ok(checklist.includes(addr), 'reminds about the un-parked awaiting-agent thread');
+  assert.ok(!checklist.includes(done), 'a thread the agent marked done is NOT in the checklist');
+  assert.ok(!checklist.includes(defer), 'a deferred thread is NOT in the checklist');
+});
+
 test('wait_for_feedback survives a daemon restart mid-wait (recovers without a manual retry)', async (t) => {
   killPort();
   rmSync(DATA, { recursive: true, force: true });

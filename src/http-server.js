@@ -124,7 +124,7 @@ export function createServer(store, hub, config) {
         if (GET && sub === 'notes') return sendJson(res, 200, { notes: store.allNotes(id) });
         if (GET && sub === 'threads') {
           return sendJson(res, 200, {
-            threads: store.get(id).threads.map((t) => ({ id: t.id, title: t.title, tags: t.tags, status: t.status, deferred: t.deferred, work: t.work, messages: t.messages.length })),
+            threads: store.get(id).threads.map((t) => ({ id: t.id, title: t.title, tags: t.tags, status: t.status, deferred: t.deferred, work: t.work, lastAuthor: t.messages.length ? t.messages[t.messages.length - 1].author : null, messages: t.messages.length })),
           });
         }
         if (GET && sub === 'events') {

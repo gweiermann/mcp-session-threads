@@ -239,6 +239,7 @@ export class BoardStore extends EventEmitter {
       if (parts.length) t.messages.push({ author: 'user', text: parts.join(' — '), ts });
       if (r.resolve) t.status = 'resolved';
       else if (parts.length) t.status = 'open'; // any non-resolve reply reopens
+      t.work = null; // the user responded -> any prior agent "done" marker is stale; the agent owes a fresh look
       t.updatedAt = ts;
       out.push({ thread_id: t.id, title: t.title, tags: t.tags, action: r.action || null, text, resolved: !!r.resolve });
     }
