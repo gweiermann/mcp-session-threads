@@ -4,11 +4,19 @@ An [MCP](https://modelcontextprotocol.io) server that turns an agent's **review 
 
 When an agent has several findings, questions, or decisions for you, it posts each as its own **thread** on a local web board. You reply per‑thread with quick‑reply buttons or free text, dump unrelated thoughts in a side notes rail, and submit once. The agent picks up your batched feedback and responds — all on one **stable local URL**, with a **fresh board per project**.
 
-<!-- Add a screenshot/GIF here for the GitHub page. -->
+![The board — every thread from one session at a glance](docs/screenshot-board.png)
+
+![Each thread opens as its own full‑screen chat](docs/screenshot-thread.png)
 
 ## Why
 
-Agent review/planning turns are painful in a chat transcript: you scroll back and forth, lose track of which point you answered, and every reply pollutes the context. This gives you a calm, keyboard‑drivable board where each point is independent, your drafts persist, and nothing is lost.
+You're deep in **one** Claude Code session and the work piles up:
+
+- you spot **several improvement ideas** at once and don't want to fork a separate session for each;
+- the agent hands you **~30 review findings** to work through together;
+- juggling **multiple sessions** is a chore — and parallel agents happily crash into each other's work.
+
+The fix is **one system, one context window** — but with each thread shown as its **own chat**, so it stays easy to keep track. You answer threads independently, at your own pace, and **send your feedback back in batches**. The agent keeps working in a single session; nothing forks, nothing collides, nothing gets lost in the scrollback.
 
 ## Install
 
