@@ -325,6 +325,24 @@
         return attn.concat(waiting);
       };
 
+      // Frozen order for the full-screen sweep. openThreads() is the LIVE
+      // sorted/grouped order (list + counts). While you page through threads in
+      // detail we keep the order you started with and only re-sort when you go
+      // back to the overview — so replying/resolving doesn't yank the current
+      // thread to another group and shift your position under you.
+      let navOrder = []; // thread ids, snapshotted on each list render
+      const refreshNavOrder = () => { navOrder = openThreads().map((t) => t.id); };
+      function navSeq() {
+        const byId = new Map(state.threads.map((t) => [t.id, t]));
+        // keep every snapshotted thread in place even if it just became resolved/
+        // answered (so the current thread never vanishes mid-sweep)…
+        const seq = navOrder.map((id) => byId.get(id)).filter(Boolean);
+        // …and append any newly-arrived open threads at the end so they're reachable.
+        const known = new Set(navOrder);
+        for (const t of openThreads()) if (!known.has(t.id)) seq.push(t);
+        return seq;
+      }
+
       function persistDrafts() { try { localStorage.setItem(LS_DRAFTS, JSON.stringify(drafts)); } catch {} }
       function persistNotes() { try { localStorage.setItem(LS_NOTES, notes); } catch {} }
       function loadPersisted() {
@@ -436,9 +454,10 @@
         const t = state.threads.find((x) => x.id === id);
         if (!t) { goList(); return; }
         main.classList.add('detail');
-        const open = openThreads();
+        const open = navSeq(); // frozen sweep order — do NOT re-sort while paging
         const idx = open.findIndex((x) => x.id === id);
-        if (idx >= 0) selIndex = idx; // keep list selection in sync
+        const liveIdx = openThreads().findIndex((x) => x.id === id);
+        if (liveIdx >= 0) selIndex = liveIdx; // list highlight follows the live sort for when you return
         const d = draftFor(id);
 
         // Compact top bar: back + title share one line when there's room, then
@@ -616,8 +635,13 @@
       function render() {
         const r = route();
         const main = $('main'); main.innerHTML = ''; main.classList.remove('detail');
-        if (r.name === 'detail' && state.threads.find((x) => x.id === r.id)) renderDetail(main, r.id);
-        else renderList(main);
+        if (r.name === 'detail' && state.threads.find((x) => x.id === r.id)) {
+          if (!navOrder.length) refreshNavOrder(); // baseline when deep-linking straight into a thread
+          renderDetail(main, r.id);
+        } else {
+          refreshNavOrder(); // on the overview we (re-)snapshot the sweep order
+          renderList(main);
+        }
         updateHeader();
         updateSubmitZone();
         updateGutter(r);
@@ -625,51 +649,60 @@
 
       function updateHeader() {
         const open = openThreads();
-        const total = open.length;
-        const answered = open.filter(isAnswered).length;
+        // Your reply progress spans ONLY threads on your plate: ones needing a
+        // reply + ones you've staged. Threads already submitted (awaitingAgent)
+        // are the agent's court and are NOT counted here — they show separately.
+        const mine = open.filter((t) => needsAttention(t) || isStaged(t));
+        const mineTotal = mine.length;
+        const mineReplied = mine.filter(isStaged).length;
+        const withAgent = open.filter(awaitingAgent).length;
         const agentDone = open.filter((t) => t.work === 'done').length;
         const resolved = state.threads.filter((t) => t.status === 'resolved').length;
         const deferred = state.threads.filter(isDeferred).length;
         const status = (state.agent && state.agent.status) || 'idle';
         const working = status === 'working';
-        const tail = (resolved ? ` · ${resolved} resolved` : '') + (deferred ? ` · ${deferred} deferred` : '');
 
         // header counts + progress bar switch dimension by whose turn it is:
         // while the agent works we lead with ITS progress (green); otherwise with YOUR replies (blue).
-        if (!total) {
-          $('counts').textContent = tail ? tail.replace(/^ · /, '') : 'no threads';
-          $('pbReplied').style.width = '0%'; $('pbDone').style.width = '0%';
-        } else if (working) {
-          $('counts').textContent = `⚙ agent ${agentDone}/${total} done` + (answered ? ` · you ${answered}/${total}` : '') + tail;
-          $('pbDone').style.width = (agentDone / total) * 100 + '%'; $('pbReplied').style.width = '0%';
+        const parts = [];
+        if (working) {
+          parts.push(`⚙ agent ${agentDone}/${open.length} done`);
+          if (mineTotal) parts.push(`you ${mineReplied}/${mineTotal}`);
+          $('pbDone').style.width = open.length ? (agentDone / open.length) * 100 + '%' : '0%'; $('pbReplied').style.width = '0%';
         } else {
-          $('counts').textContent = `${answered}/${total} replied` + (agentDone ? ` · ${agentDone} agent-done` : '') + tail;
-          $('pbReplied').style.width = (answered / total) * 100 + '%'; $('pbDone').style.width = '0%';
+          if (mineTotal) parts.push(`${mineReplied}/${mineTotal} to reply`);
+          $('pbReplied').style.width = mineTotal ? (mineReplied / mineTotal) * 100 + '%' : '0%'; $('pbDone').style.width = '0%';
         }
+        if (withAgent) parts.push(`${withAgent} with agent`);
+        if (resolved) parts.push(`${resolved} resolved`);
+        if (deferred) parts.push(`${deferred} deferred`);
+        $('counts').textContent = parts.join(' · ') || 'no threads';
 
         $('agentActivity').textContent = working ? '⚙ ' + (state.agent.activity || 'Working…') : (status === 'waiting' ? '🔔 waiting for your feedback' : '');
 
-        const allAnswered = total > 0 && answered === total;
-        if (working) document.title = `⚙ ${agentDone}/${total} agent — Session Threads`;
-        else if (status === 'waiting' && !allAnswered) document.title = `🔔 your turn ${answered}/${total} — Session Threads`;
-        else document.title = allAnswered ? `✅ ${answered}/${total} — Session Threads` : (total ? `(${answered}/${total}) Session Threads` : 'Session Threads');
+        const allMine = mineTotal > 0 && mineReplied === mineTotal;
+        if (working) document.title = `⚙ ${agentDone}/${open.length} agent — Session Threads`;
+        else if (status === 'waiting' && mineTotal && !allMine) document.title = `🔔 your turn ${mineReplied}/${mineTotal} — Session Threads`;
+        else if (allMine) document.title = `✅ ${mineReplied}/${mineTotal} — Session Threads`;
+        else document.title = mineTotal ? `(${mineReplied}/${mineTotal}) Session Threads` : 'Session Threads';
       }
 
-      // Navigate relative to the CURRENTLY open thread, computed fresh at click
-      // time from live order (fixes the stale Next button after keyboard nav).
+      // Navigate relative to the CURRENTLY open thread, using the frozen sweep
+      // order so replying/resolving doesn't shuffle where "next"/"prev" land.
       function goRel(delta, focus) {
         const r = route(); if (r.name !== 'detail') return;
-        const o = openThreads(); const i = o.findIndex((x) => x.id === r.id);
+        const o = navSeq(); const i = o.findIndex((x) => x.id === r.id);
         const n = o[i + delta]; if (n) openThread(n.id, !!focus);
       }
 
       function updateSubmitZone() {
         const open = openThreads();
-        const answered = open.filter(isAnswered).length;
-        const staged = open.filter(isStaged).length;
-        const total = open.length;
-        const allDone = total > 0 && answered === total;
-        $('progress').textContent = total ? `${answered} of ${total} replied` : 'No open threads';
+        // only threads on your plate (need a reply or staged) — not ones already with the agent
+        const mine = open.filter((t) => needsAttention(t) || isStaged(t));
+        const mineTotal = mine.length;
+        const staged = mine.filter(isStaged).length;
+        const allDone = mineTotal > 0 && staged === mineTotal;
+        $('progress').textContent = mineTotal ? `${staged} of ${mineTotal} replied` : 'Nothing to reply to';
         $('submitZone').classList.toggle('ready', allDone);
         const anything = staged > 0 || notes.trim();
         $('submitBtn').disabled = !anything;
@@ -679,7 +712,7 @@
       function updateGutter(r) {
         const prev = $('gutterPrev'), next = $('gutterNext');
         if (r.name !== 'detail') { prev.hidden = true; next.hidden = true; return; }
-        const open = openThreads();
+        const open = navSeq();
         const idx = open.findIndex((x) => x.id === r.id);
         prev.hidden = false; next.hidden = false;
         prev.disabled = idx <= 0; next.disabled = idx < 0 || idx >= open.length - 1;
@@ -719,7 +752,17 @@
         if (next.version === state.version) return;
         const prevCount = state.threads.length;
         const prevAgent = (state.agent && state.agent.status) || 'idle';
+        // A background update re-renders the whole view, which would destroy the
+        // reply <textarea> you're typing in and blur it. Capture its focus + caret
+        // first, then restore them onto the freshly rendered textarea below.
+        const ae = document.activeElement;
+        const keepFocus = ae && ae.tagName === 'TEXTAREA' && ae.closest && ae.closest('.chat-composer');
+        const caret = keepFocus ? { start: ae.selectionStart, end: ae.selectionEnd } : null;
         state = next; render();
+        if (caret) {
+          const ta = document.querySelector('.chat-composer textarea');
+          if (ta) { ta.focus(); try { ta.setSelectionRange(caret.start, caret.end); } catch { /* ignore */ } }
+        }
         if (!firstLoad) {
           if (next.threads.length > prevCount) toast('Agent posted a new thread');
           const nowAgent = (next.agent && next.agent.status) || 'idle';

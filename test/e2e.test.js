@@ -137,3 +137,27 @@ test('defer_thread parks a thread; resume_thread un-parks it and posts a why-now
   assert.equal(th.deferred, false, 'resume_thread clears deferred');
   assert.ok(th.messages.some((m) => m.author === 'agent' && /good time to pick this up/.test(m.text)), 'resume posts the why-now recommendation');
 });
+
+test('wait_for_feedback survives a daemon restart mid-wait (recovers without a manual retry)', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const F = makeClient('F', '/proj/recover');
+  t.after(async () => { await F.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await F.client.connect(F.transport);
+  const id = boardId(await urlOf(F.client));
+  const tid = textOf(await F.client.callTool({ name: 'create_thread', arguments: { title: 'Recover me' } })).match(/thread (\w+)/)[1];
+
+  const healthy = async () => { try { return (await fetch(`${BASE}/health`)).ok; } catch { return false; } };
+  const untilHealthy = async (ms = 12000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await healthy()) return true; await new Promise((r) => setTimeout(r, 50)); } return false; };
+
+  // start a long wait, let it block, then kill the daemon out from under it
+  const waiting = F.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 40 } });
+  await new Promise((r) => setTimeout(r, 700));
+  killPort(); // simulate a code-change daemon restart while the wait is in flight
+
+  // the client auto-restarts the daemon; once it is back, submit through it
+  assert.ok(await untilHealthy(), 'daemon came back after being killed (client auto-restarted it)');
+  await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: tid, action: 'Fix', text: 'still here after the bounce' }], notes: '' }) });
+
+  assert.ok(textOf(await waiting).includes('still here after the bounce'), 'the SAME wait call recovered and returned the feedback — no manual retry needed');
+});

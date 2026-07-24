@@ -14,6 +14,7 @@ export const INSTRUCTIONS = [
 ].join(' ');
 
 const ok = (text) => ({ content: [{ type: 'text', text }] });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function formatFeedback(p) {
   if (p.status === 'timeout') {
@@ -105,26 +106,47 @@ export function registerTools(mcp, client) {
 
   mcp.tool(
     'wait_for_feedback',
-    'Block until the user submits their batched replies/notes on the board, then return them. ONE long call (default ~55 min) — do not poll in a loop; it returns instantly on submit and sends progress so it will not time out. Automatically flips the board to "your turn" (title + sound) while blocking and back to idle on return. Create the threads BEFORE calling this.',
+    'Block until the user submits their batched replies/notes on the board, then return them. ONE long call (default ~55 min) — do not poll in a loop; it returns instantly on submit and sends progress so it will not time out. Automatically flips the board to "your turn" (title + sound) while blocking and back to idle on return. Survives a daemon restart mid-wait (reconnects and keeps waiting); only if reconnection keeps failing does it return with a hint to call it once more. Create the threads BEFORE calling this.',
     { timeout_seconds: z.number().int().min(5).max(3600).optional() },
     async ({ timeout_seconds }, extra) => {
       const deadline = Date.now() + (timeout_seconds ?? 3300) * 1000;
       let n = 0;
-      const beat = () => {
+      const beat = (message) => {
         try {
-          extra?.sendNotification?.({ method: 'notifications/progress', params: { progressToken: extra?._meta?.progressToken ?? 'wait', progress: ++n, message: 'waiting for your feedback on the board…' } });
+          extra?.sendNotification?.({ method: 'notifications/progress', params: { progressToken: extra?._meta?.progressToken ?? 'wait', progress: ++n, message: message || 'waiting for your feedback on the board…' } });
         } catch {
           /* ignore */
         }
       };
-      const hb = setInterval(beat, 60000);
+      const hb = setInterval(() => beat(), 60000);
       // Tell the board it is now the user's turn: the UI switches to the reply
       // progress bar and pings them (sound/toast). Cleared on return below.
-      await client.call('/agent', { method: 'POST', body: { status: 'waiting', activity: 'Waiting for your feedback', currentThreadId: null } }).catch(() => {});
+      const markWaiting = () => client.call('/agent', { method: 'POST', body: { status: 'waiting', activity: 'Waiting for your feedback', currentThreadId: null } }).catch(() => {});
+      await markWaiting();
+      let fails = 0; // consecutive reconnect failures
       try {
         while (Date.now() < deadline) {
           const secs = Math.min(25, Math.max(5, Math.ceil((deadline - Date.now()) / 1000)));
-          const p = await client.call(`/wait?timeout=${secs}`);
+          let p;
+          try {
+            p = await client.call(`/wait?timeout=${secs}`);
+            fails = 0;
+          } catch (e) {
+            // The daemon most likely bounced (e.g. a code change restarted it).
+            // Reconnect and keep waiting instead of dying, so an in-flight wait
+            // survives the restart. The board (threads + any submitted feedback)
+            // persists to disk, so nothing is lost across the bounce.
+            fails += 1;
+            if (fails >= 6) {
+              return ok(`The board connection kept dropping and could not be re-established (last error: ${e.message}). Your threads and any feedback you submitted are safe on the board — call wait_for_feedback once more to resume waiting.`);
+            }
+            beat('board connection dropped — reconnecting…');
+            await client.ensureDaemon().catch(() => {});
+            await client.resolveBoard().catch(() => {});
+            await markWaiting();
+            await sleep(Math.min(1000 * fails, 3000));
+            continue;
+          }
           if (p.status !== 'timeout') return ok(formatFeedback(p));
         }
         return ok(formatFeedback({ status: 'timeout' }));
