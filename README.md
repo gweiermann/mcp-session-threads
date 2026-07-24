@@ -56,12 +56,13 @@ Boards are stored as JSON under `~/.session-threads/boards`.
 
 ## Web board
 
-- **Command‑center list** of collapsed threads (newest first); click one to open it full‑screen as a chat.
+- **Command‑center list** grouped into lanes — **Needs your attention**, **Waiting on agent**, **Deferred**, **Resolved** — newest first; click one to open it full‑screen as a chat.
+- **Read/unread per thread**: unread = still awaiting *your* response; cleared only when you reply or submit (never by merely viewing). Shown as a marker in the list and a pill in the full‑screen view.
 - **Markdown** in bodies/messages — code, tables, lists, links — rendered safely (HTML escaped, `javascript:` links neutralised).
 - **Freestyle tags** (`high`, `security`, `question`, …) shown as auto‑coloured badges.
 - **Quick replies** inline in the chat; a click stages the reply as an editable **pending** bubble. Your drafts persist in the browser until you submit.
 - **Other notes** rail, always open, for thoughts unrelated to any thread — each submission is preserved.
-- **Progress**: a top bar + browser‑title `x/y`, plus an optional per‑board finish **sound**.
+- **Turn‑aware progress**: the top bar + browser title switch between *agent* progress while it works and *your* reply progress when it's your turn; optional per‑board **sounds** confirm when your feedback syncs and ping when it becomes your turn.
 - **Keyboard**: `k`/`j` next/prev thread, `Enter`/`e` open or reply, `h`/`l` scroll, `r` resolve, `Esc` leave.
 
 ## Tools
@@ -71,6 +72,8 @@ Boards are stored as JSON under `~/.session-threads/boards`.
 | `create_thread(title, body?, tags?, actions?)` | Open a thread (Markdown body, freestyle tags, tailored quick‑reply buttons). |
 | `add_message(thread_id, text, actions?, tags?)` | Append an agent message; reopens a resolved thread. |
 | `resolve_thread` / `reopen_thread` | Mark a thread done / reopen it. |
+| `defer_thread(thread_id, reason?)` | Park a thread in the Deferred lane (excluded from the review counts) until it's a good time. |
+| `resume_thread(thread_id, message)` | Un‑defer a thread and post a "why pick this up now" message; brings it back as unread. |
 | `list_threads(include_resolved?)` | Reconcile board state. |
 | `set_summary(text)` | Pin an overall TL;DR at the top of the board. |
 | `get_board_url()` | The stable board URL to share with the user. |

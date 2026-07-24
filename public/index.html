@@ -91,6 +91,10 @@
       .card.resolved { opacity: 0.55; }
       .card.replied { opacity: 0.62; }
       .card.replied:hover { opacity: 0.9; }
+      .card.unread { border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--panel)); }
+      .card.unread .rtitle { font-weight: 700; }
+      .card.deferred { opacity: 0.6; border-style: dashed; }
+      .card.deferred:hover { opacity: 0.85; }
       .card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent), var(--shadow); opacity: 1; }
       .keyhint { font-size: 12px; color: var(--muted); margin: 0 4px 12px; }
       .keyhint kbd { font-family: ui-monospace, Menlo, monospace; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
@@ -117,7 +121,11 @@
       .badge.tag-default { color: var(--muted); border-style: dashed; }
       .chip { font-size: 11px; font-weight: 650; padding: 2px 9px; border-radius: 999px; white-space: nowrap; flex: none; }
       .chip.replied { background: color-mix(in srgb, var(--green) 18%, var(--panel-2)); color: var(--green); border: 1px solid color-mix(in srgb, var(--green) 40%, var(--border)); }
+      .chip.waiting-agent { background: color-mix(in srgb, var(--amber) 12%, var(--panel-2)); color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 35%, var(--border)); }
+      .chip.unread-chip { background: color-mix(in srgb, var(--accent) 15%, var(--panel-2)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); }
+      .chip.deferred { background: var(--panel-2); color: var(--muted); border: 1px dashed var(--border); }
       .chip.resolved { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+      .section-note { color: var(--muted); font-size: 13px; padding: 2px 4px 10px; }
 
       /* ---- summary ---- */
       .summary { border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
@@ -239,7 +247,7 @@
       <span class="agent-activity" id="agentActivity"></span>
       <span class="spacer"></span>
       <span class="counts" id="counts"></span>
-      <button class="iconbtn" id="soundBtn" title="Sound notification when the agent finishes">🔕</button>
+      <button class="iconbtn" id="soundBtn" title="Sound when the agent needs you or finishes">🔕</button>
     </header>
     <div class="progressbar" id="progressbar"><div class="pb-replied" id="pbReplied"></div><div class="pb-done" id="pbDone"></div></div>
 
@@ -273,10 +281,10 @@
       let firstLoad = true;
       const drafts = {}; // id -> { action, text, resolve, saved }
       const edit = {}; // id -> true when the pending reply bubble is being edited
-      const seen = {};
       let notes = '';
       let selIndex = 0; // keyboard-highlighted row in the list (index into open threads)
       let wantFocus = false; // focus the composer on the next detail render (set by mouse nav / the `e` key, NOT j/k)
+      let pendingSync = false; // we submitted while the agent was waiting; play a confirmation sound when it consumes the batch
 
       const LS_DRAFTS = 'rt-drafts';
       const LS_NOTES = 'rt-notes';
@@ -287,29 +295,41 @@
       const tagsFor = (t) => (Array.isArray(t.tags) ? t.tags : []);
       const ts = (t) => t.updatedAt || t.createdAt || '';
       const byFreshest = (a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : 0);
-      const openThreads = () => state.threads.filter((t) => t.status !== 'resolved').sort(byFreshest);
 
       function draftFor(id) {
         if (!drafts[id]) drafts[id] = { action: null, text: '', resolve: false, saved: false };
         return drafts[id];
       }
       const hasContent = (d) => !!(d && (d.action || (d.text && d.text.trim()) || d.resolve));
-      const isReplied = (t) => { const d = drafts[t.id]; return !!(d && d.saved && hasContent(d)); };
+      // ---- whose turn is it? ----
+      // A reply you staged locally but have NOT submitted yet.
+      const isStaged = (t) => { const d = drafts[t.id]; return !!(d && d.saved && hasContent(d)); };
+      const lastAuthor = (t) => (t.messages && t.messages.length ? t.messages[t.messages.length - 1].author : null);
+      // Agent parked it: shown in the Deferred lane, ignored by the review flow until resumed.
+      const isDeferred = (t) => t.deferred === true && t.status !== 'resolved';
+      // Your last submitted message is the latest -> ball is in the AGENT's court.
+      const awaitingAgent = (t) => t.status !== 'resolved' && lastAuthor(t) === 'user';
+      // You've handled it (staged OR already submitted) -> not on your plate.
+      const isAnswered = (t) => t.status !== 'resolved' && (awaitingAgent(t) || isStaged(t));
+      // Truly needs you: open, not deferred, agent spoke last (or fresh), no staged reply.
+      const needsAttention = (t) => t.status !== 'resolved' && !isDeferred(t) && !isAnswered(t);
+      // "Unread" = still awaiting YOUR response. Set when the agent posts; cleared
+      // ONLY when you respond (stage a reply or submit) — viewing never clears it.
+      // Derived from persisted state (drafts + server messages), so it survives reloads.
+      const isUnread = (t) => needsAttention(t);
+      // Open, non-deferred threads grouped so keyboard order == visual order: attention first.
+      const openThreads = () => {
+        const open = state.threads.filter((t) => t.status !== 'resolved' && !isDeferred(t));
+        const attn = open.filter(needsAttention).sort(byFreshest);
+        const waiting = open.filter((t) => !needsAttention(t)).sort(byFreshest);
+        return attn.concat(waiting);
+      };
 
       function persistDrafts() { try { localStorage.setItem(LS_DRAFTS, JSON.stringify(drafts)); } catch {} }
       function persistNotes() { try { localStorage.setItem(LS_NOTES, notes); } catch {} }
       function loadPersisted() {
         try { Object.assign(drafts, JSON.parse(localStorage.getItem(LS_DRAFTS) || '{}')); } catch {}
         notes = localStorage.getItem(LS_NOTES) || '';
-      }
-
-      function markSeen(id) { const t = state.threads.find((x) => x.id === id); if (t) seen[id] = t.updatedAt; }
-      function hasUpdate(t) {
-        const s = seen[t.id];
-        if (s === undefined) return true;
-        if (t.updatedAt <= s) return false;
-        const last = t.messages[t.messages.length - 1];
-        return !last || last.author === 'agent';
       }
 
       // markdown (mdToHtml / stripMd / escapeHtml) imported at top from /markdown.js
@@ -344,22 +364,27 @@
       // ---- list view ----
       function threadRow(t) {
         const resolved = t.status === 'resolved';
-        const replied = isReplied(t);
+        const answered = isAnswered(t);
+        const staged = isStaged(t);
+        const unread = isUnread(t);
+        const deferred = isDeferred(t);
         const card = document.createElement('div');
-        card.className = 'card' + (resolved ? ' resolved' : '') + (replied ? ' replied' : '');
+        card.className = 'card' + (resolved ? ' resolved' : '') + (deferred ? ' deferred' : '') + (answered ? ' replied' : '') + (unread ? ' unread' : '');
         const head = document.createElement('div'); head.className = 'row-head';
 
         const main = document.createElement('div'); main.className = 'row-main';
         const dotSlot = document.createElement('span'); dotSlot.className = 'dot-slot';
-        if (!replied && !resolved && hasUpdate(t)) { const dot = document.createElement('span'); dot.className = 'new-dot'; dot.title = 'New update'; dotSlot.appendChild(dot); }
+        if (unread) { const dot = document.createElement('span'); dot.className = 'new-dot'; dot.title = 'Unread — needs your response'; dotSlot.appendChild(dot); }
         const title = document.createElement('span'); title.className = 'rtitle'; title.textContent = t.title;
         main.append(dotSlot, title); head.appendChild(main);
 
         // agent progress indicators (tags & message-preview intentionally omitted from the dashboard)
-        if (state.agent && state.agent.currentThreadId === t.id && !resolved) head.appendChild(chip('⚙ working', 'working'));
-        else if (t.work === 'done' && !replied) head.appendChild(chip('✓ done', 'agentdone'));
+        if (!deferred && state.agent && state.agent.currentThreadId === t.id && !resolved) head.appendChild(chip('⚙ working', 'working'));
+        else if (!deferred && t.work === 'done' && unread) head.appendChild(chip('✓ done', 'agentdone'));
         if (resolved) head.appendChild(chip('resolved', 'resolved'));
-        else if (replied) head.appendChild(chip('✓ ' + (drafts[t.id].action || 'replied'), 'replied'));
+        else if (deferred) head.appendChild(chip('⏸ deferred', 'deferred'));
+        else if (staged) head.appendChild(chip('✓ ' + ((drafts[t.id] && drafts[t.id].action) || 'pending'), 'replied'));
+        else if (awaitingAgent(t)) head.appendChild(chip('⏳ waiting on agent', 'waiting-agent'));
 
         const chev = document.createElement('span'); chev.className = 'chev'; chev.textContent = '›'; head.appendChild(chev);
         head.onclick = () => openThread(t.id, true);
@@ -377,18 +402,30 @@
           inner.appendChild(s);
         }
         maybeDoneBanner(inner);
-        const open = openThreads();
-        const remaining = open.filter((t) => !isReplied(t)).length;
-        const st = document.createElement('div'); st.className = 'section-title'; st.textContent = `Threads${remaining ? ` — ${remaining} to review` : ''}`;
-        inner.appendChild(st);
+        const open = openThreads();              // grouped: attention first, then waiting-on-agent
+        const attn = open.filter(needsAttention);
+        const waiting = open.filter((t) => !needsAttention(t));
         if (!open.length) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'Nothing open. New review threads will show up here.'; inner.appendChild(e); }
         else {
           selIndex = Math.max(0, Math.min(selIndex, open.length - 1));
           const hint = document.createElement('div'); hint.className = 'keyhint';
           hint.innerHTML = '<kbd>k</kbd> next · <kbd>j</kbd> prev · <kbd>Enter</kbd>/<kbd>e</kbd> open · <kbd>r</kbd> resolve · in a thread: <kbd>h</kbd>/<kbd>l</kbd> scroll, <kbd>Esc</kbd> leave';
           inner.appendChild(hint);
-          open.forEach((t, i) => { const row = threadRow(t); if (i === selIndex) row.classList.add('sel'); inner.appendChild(row); });
+
+          const st1 = document.createElement('div'); st1.className = 'section-title'; st1.textContent = `Needs your attention${attn.length ? ` — ${attn.length}` : ''}`;
+          inner.appendChild(st1);
+          if (!attn.length) { const n = document.createElement('div'); n.className = 'section-note'; n.textContent = "You're all caught up — waiting on the agent."; inner.appendChild(n); }
+          attn.forEach((t, i) => { const row = threadRow(t); if (i === selIndex) row.classList.add('sel'); inner.appendChild(row); });
+
+          if (waiting.length) {
+            const st2 = document.createElement('div'); st2.className = 'section-title'; st2.textContent = `Waiting on agent — ${waiting.length}`;
+            inner.appendChild(st2);
+            waiting.forEach((t, j) => { const row = threadRow(t); if (attn.length + j === selIndex) row.classList.add('sel'); inner.appendChild(row); });
+          }
         }
+
+        const deferred = state.threads.filter(isDeferred).sort(byFreshest);
+        if (deferred.length) { const dt = document.createElement('div'); dt.className = 'section-title'; dt.textContent = `Deferred — ${deferred.length}`; inner.appendChild(dt); for (const t of deferred) inner.appendChild(threadRow(t)); }
 
         const resolved = state.threads.filter((t) => t.status === 'resolved').sort(byFreshest);
         if (resolved.length) { const rt = document.createElement('div'); rt.className = 'section-title'; rt.textContent = 'Resolved'; inner.appendChild(rt); for (const t of resolved) inner.appendChild(threadRow(t)); }
@@ -398,7 +435,6 @@
       function renderDetail(main, id) {
         const t = state.threads.find((x) => x.id === id);
         if (!t) { goList(); return; }
-        markSeen(id);
         main.classList.add('detail');
         const open = openThreads();
         const idx = open.findIndex((x) => x.id === id);
@@ -411,6 +447,13 @@
         const top = document.createElement('div'); top.className = 'chat-top';
         const back = document.createElement('button'); back.className = 'btn ghost small'; back.textContent = '← All threads'; back.onclick = goList; top.appendChild(back);
         const h = document.createElement('h2'); h.className = 'chat-title'; h.textContent = t.title; top.appendChild(h);
+        // read/unread status pill — visible while navigating with j/k so you can
+        // tell handled threads from ones still awaiting your response.
+        if (t.status === 'resolved') top.appendChild(chip('resolved', 'resolved'));
+        else if (isDeferred(t)) top.appendChild(chip('⏸ deferred', 'deferred'));
+        else if (isUnread(t)) top.appendChild(chip('● unread', 'unread-chip'));
+        else if (isStaged(t)) top.appendChild(chip('✓ replied (pending)', 'replied'));
+        else if (awaitingAgent(t)) top.appendChild(chip('⏳ waiting on agent', 'waiting-agent'));
         if (idx >= 0) { const pos = document.createElement('span'); pos.className = 'pos'; pos.textContent = `${idx + 1}/${open.length}`; top.appendChild(pos); }
         const prevBtn = document.createElement('button'); prevBtn.className = 'btn small'; prevBtn.textContent = '‹'; prevBtn.title = 'Previous (j)'; prevBtn.disabled = idx <= 0; prevBtn.onclick = () => goRel(-1, true); top.appendChild(prevBtn);
         const nextBtn = document.createElement('button'); nextBtn.className = 'btn small'; nextBtn.textContent = '›'; nextBtn.title = 'Next (k)'; nextBtn.disabled = idx < 0 || idx >= open.length - 1; nextBtn.onclick = () => goRel(1, true); top.appendChild(nextBtn);
@@ -553,18 +596,19 @@
         if (!hasContent(d)) return;
         d.saved = true; edit[id] = false; persistDrafts();
         const open = openThreads();
-        const allDone = open.length && open.every(isReplied);
+        const allDone = open.length && open.every(isAnswered);
         if (!quiet) toast(allDone ? 'All threads answered — ready to submit ✓' : 'Reply staged (pending) ✓');
         render();
       }
 
       function maybeDoneBanner(main) {
         const open = openThreads();
-        if (!open.length || !open.every(isReplied)) return;
+        if (!open.length || !open.every(isAnswered)) return;
+        const staged = open.some(isStaged);
         const b = document.createElement('div'); b.className = 'done-banner';
-        b.innerHTML = '<span class="txt">All threads answered.</span>';
-        const btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Submit feedback →'; btn.onclick = submit;
-        b.appendChild(btn); main.appendChild(b);
+        b.innerHTML = `<span class="txt">${staged ? 'All threads answered.' : 'All answered — waiting on the agent.'}</span>`;
+        if (staged) { const btn = document.createElement('button'); btn.className = 'btn primary'; btn.textContent = 'Submit feedback →'; btn.onclick = submit; b.appendChild(btn); }
+        main.appendChild(b);
       }
 
       // ---- shared render ----
@@ -582,16 +626,33 @@
       function updateHeader() {
         const open = openThreads();
         const total = open.length;
-        const replied = open.filter(isReplied).length;
+        const answered = open.filter(isAnswered).length;
         const agentDone = open.filter((t) => t.work === 'done').length;
-        const resolved = state.threads.length - total;
-        $('counts').textContent = total ? `${agentDone} done · ${replied}/${total} replied` + (resolved ? ` · ${resolved} resolved` : '') : (resolved ? `${resolved} resolved` : 'no threads');
-        $('pbReplied').style.width = total ? (replied / total) * 100 + '%' : '0%';
-        $('pbDone').style.width = total ? (agentDone / total) * 100 + '%' : '0%';
-        const act = state.agent && state.agent.status === 'working' ? (state.agent.activity || 'Working…') : '';
-        $('agentActivity').textContent = act ? '⚙ ' + act : '';
-        const allReplied = total > 0 && replied === total;
-        document.title = allReplied ? `✅ ${replied}/${total} — Session Threads` : (total ? `(${replied}/${total}) Session Threads` : 'Session Threads');
+        const resolved = state.threads.filter((t) => t.status === 'resolved').length;
+        const deferred = state.threads.filter(isDeferred).length;
+        const status = (state.agent && state.agent.status) || 'idle';
+        const working = status === 'working';
+        const tail = (resolved ? ` · ${resolved} resolved` : '') + (deferred ? ` · ${deferred} deferred` : '');
+
+        // header counts + progress bar switch dimension by whose turn it is:
+        // while the agent works we lead with ITS progress (green); otherwise with YOUR replies (blue).
+        if (!total) {
+          $('counts').textContent = tail ? tail.replace(/^ · /, '') : 'no threads';
+          $('pbReplied').style.width = '0%'; $('pbDone').style.width = '0%';
+        } else if (working) {
+          $('counts').textContent = `⚙ agent ${agentDone}/${total} done` + (answered ? ` · you ${answered}/${total}` : '') + tail;
+          $('pbDone').style.width = (agentDone / total) * 100 + '%'; $('pbReplied').style.width = '0%';
+        } else {
+          $('counts').textContent = `${answered}/${total} replied` + (agentDone ? ` · ${agentDone} agent-done` : '') + tail;
+          $('pbReplied').style.width = (answered / total) * 100 + '%'; $('pbDone').style.width = '0%';
+        }
+
+        $('agentActivity').textContent = working ? '⚙ ' + (state.agent.activity || 'Working…') : (status === 'waiting' ? '🔔 waiting for your feedback' : '');
+
+        const allAnswered = total > 0 && answered === total;
+        if (working) document.title = `⚙ ${agentDone}/${total} agent — Session Threads`;
+        else if (status === 'waiting' && !allAnswered) document.title = `🔔 your turn ${answered}/${total} — Session Threads`;
+        else document.title = allAnswered ? `✅ ${answered}/${total} — Session Threads` : (total ? `(${answered}/${total}) Session Threads` : 'Session Threads');
       }
 
       // Navigate relative to the CURRENTLY open thread, computed fresh at click
@@ -604,14 +665,15 @@
 
       function updateSubmitZone() {
         const open = openThreads();
-        const replied = open.filter(isReplied).length;
+        const answered = open.filter(isAnswered).length;
+        const staged = open.filter(isStaged).length;
         const total = open.length;
-        const allDone = total > 0 && replied === total;
-        $('progress').textContent = total ? `${replied} of ${total} replied` : 'No open threads';
+        const allDone = total > 0 && answered === total;
+        $('progress').textContent = total ? `${answered} of ${total} replied` : 'No open threads';
         $('submitZone').classList.toggle('ready', allDone);
-        const anything = replied > 0 || notes.trim();
+        const anything = staged > 0 || notes.trim();
         $('submitBtn').disabled = !anything;
-        $('submitBtn').textContent = allDone ? 'Submit feedback →' : 'Submit now';
+        $('submitBtn').textContent = !anything ? 'Nothing to submit' : (allDone && staged > 0 ? 'Submit feedback →' : 'Submit now');
       }
 
       function updateGutter(r) {
@@ -639,6 +701,8 @@
           if (!res.ok) throw new Error('HTTP ' + res.status);
           for (const rep of replies) delete drafts[rep.thread_id];
           notes = ''; $('newNotes').value = ''; persistDrafts(); persistNotes();
+          // if the agent is blocked waiting, arm the sync-confirmation sound for when it picks the batch up
+          if (((state.agent && state.agent.status) || 'idle') === 'waiting') pendingSync = true;
           toast('Feedback sent to the agent ✓');
           goList();
         } catch (e) { toast('Submit failed: ' + e.message, true); }
@@ -655,12 +719,14 @@
         if (next.version === state.version) return;
         const prevCount = state.threads.length;
         const prevAgent = (state.agent && state.agent.status) || 'idle';
-        if (firstLoad) for (const t of next.threads) seen[t.id] = t.updatedAt;
         state = next; render();
         if (!firstLoad) {
           if (next.threads.length > prevCount) toast('Agent posted a new thread');
           const nowAgent = (next.agent && next.agent.status) || 'idle';
-          if (nowAgent === 'done' && prevAgent !== 'done') { toast('Agent finished ✓'); beep(); }
+          // agent left "waiting" after we submitted -> it just synced our feedback
+          if (prevAgent === 'waiting' && nowAgent !== 'waiting' && pendingSync) { pendingSync = false; toast('Agent received your feedback ✓'); beepConfirm(); }
+          else if (nowAgent === 'waiting' && prevAgent !== 'waiting') { toast('Agent is ready — your turn to reply'); beep(); }
+          else if (nowAgent === 'done' && prevAgent !== 'done') { toast('Agent finished ✓'); beep(); }
         }
         firstLoad = false;
       }
@@ -668,17 +734,25 @@
       // ---- sound (per-board toggle, default off) ----
       const SND_KEY = 'rt-sound-' + BOARD;
       let soundOn = localStorage.getItem(SND_KEY) === '1';
-      function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — agent-finished notification' : 'Sound off — click to enable finish notification'; }
-      function beep() {
+      function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — confirms when your feedback syncs and pings when it is your turn' : 'Sound off — click to enable the sync-confirm / your-turn pings'; }
+      // play one or more sine blips; each note is [frequency, startOffsetSec, durationSec]
+      function playTones(notes) {
         if (!soundOn) return;
         try {
           const ac = new (window.AudioContext || window.webkitAudioContext)();
-          const o = ac.createOscillator(), g = ac.createGain();
-          o.connect(g); g.connect(ac.destination); o.type = 'sine'; o.frequency.value = 880;
-          g.gain.setValueAtTime(0.001, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.15, ac.currentTime + 0.02); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.35);
-          o.start(); o.stop(ac.currentTime + 0.36);
+          for (const [freq, at, dur] of notes) {
+            const o = ac.createOscillator(), g = ac.createGain();
+            o.connect(g); g.connect(ac.destination); o.type = 'sine'; o.frequency.value = freq;
+            const t0 = ac.currentTime + at;
+            g.gain.setValueAtTime(0.001, t0); g.gain.exponentialRampToValueAtTime(0.15, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+            o.start(t0); o.stop(t0 + dur + 0.01);
+          }
         } catch {}
       }
+      // your-turn / finished: a single clear high tone
+      function beep() { playTones([[880, 0, 0.35]]); }
+      // feedback synced: a quick two-note rising acknowledgement (distinct from the your-turn ping)
+      function beepConfirm() { playTones([[587, 0, 0.12], [880, 0.12, 0.16]]); }
 
       function connect() {
         const es = new EventSource(API + '/events');

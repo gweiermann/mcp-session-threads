@@ -51,7 +51,7 @@ test('end-to-end: MCP proxy + daemon full flow', async (t) => {
   await A.client.connect(A.transport);
 
   const tools = (await A.client.listTools()).tools.map((x) => x.name).sort();
-  const expected = ['add_message', 'backup_board', 'create_thread', 'export_board', 'finish_working', 'get_board_url', 'get_notes', 'import_threads', 'list_boards', 'list_threads', 'mark_thread_done', 'reopen_thread', 'resolve_thread', 'set_summary', 'start_working', 'use_board', 'wait_for_feedback', 'work_on_thread'];
+  const expected = ['add_message', 'backup_board', 'create_thread', 'defer_thread', 'export_board', 'finish_working', 'get_board_url', 'get_notes', 'import_threads', 'list_boards', 'list_threads', 'mark_thread_done', 'reopen_thread', 'resume_thread', 'resolve_thread', 'set_summary', 'start_working', 'use_board', 'wait_for_feedback', 'work_on_thread'];
   assert.ok(expected.every((n) => tools.includes(n)), `all ${expected.length} tools registered (got ${tools.length})`);
 
   const idA = boardId(await urlOf(A.client));
@@ -94,4 +94,46 @@ test('end-to-end: MCP proxy + daemon full flow', async (t) => {
   await B.client.callTool({ name: 'use_board', arguments: { board_id: idA } });
   assert.equal(boardId(await urlOf(B.client)), idA, 'use_board switched session');
   assert.match(textOf(await A.client.callTool({ name: 'backup_board', arguments: {} })), /backups\/.*\.json/);
+});
+
+test('wait_for_feedback flips the board to "your turn" while blocking, and back on return', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const D = makeClient('D', '/proj/turn');
+  t.after(async () => { await D.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await D.client.connect(D.transport);
+  const id = boardId(await urlOf(D.client));
+  const tid = textOf(await D.client.callTool({ name: 'create_thread', arguments: { title: 'T' } })).match(/thread (\w+)/)[1];
+
+  const status = async () => (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).agent.status;
+  const until = async (want, ms = 4000) => { const end = Date.now() + ms; while (Date.now() < end) { if ((await status()) === want) return true; await new Promise((r) => setTimeout(r, 40)); } return false; };
+
+  // fire the long call without awaiting, so we can observe the blocked state
+  const waiting = D.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 20 } });
+  assert.ok(await until('waiting'), 'board shows "waiting" (your turn) while wait_for_feedback blocks');
+
+  await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: tid, action: 'Approve' }], notes: '' }) });
+  assert.ok(textOf(await waiting).includes('Approve'), 'submit unblocks the call with the reply');
+  assert.ok(await until('idle'), 'board returns to "idle" once feedback is delivered');
+});
+
+test('defer_thread parks a thread; resume_thread un-parks it and posts a why-now message', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const E = makeClient('E', '/proj/defer');
+  t.after(async () => { await E.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await E.client.connect(E.transport);
+  const id = boardId(await urlOf(E.client));
+  const tid = textOf(await E.client.callTool({ name: 'create_thread', arguments: { title: 'Later work' } })).match(/thread (\w+)/)[1];
+  const threadState = async () => (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).threads.find((x) => x.id === tid);
+
+  await E.client.callTool({ name: 'defer_thread', arguments: { thread_id: tid, reason: 'blocked on the stack landing' } });
+  let th = await threadState();
+  assert.equal(th.deferred, true, 'defer_thread sets deferred:true');
+  assert.ok(th.messages.some((m) => m.author === 'agent' && /Deferred: blocked/.test(m.text)), 'defer reason posted as an agent note');
+
+  await E.client.callTool({ name: 'resume_thread', arguments: { thread_id: tid, message: 'Stack landed — good time to pick this up now.' } });
+  th = await threadState();
+  assert.equal(th.deferred, false, 'resume_thread clears deferred');
+  assert.ok(th.messages.some((m) => m.author === 'agent' && /good time to pick this up/.test(m.text)), 'resume posts the why-now recommendation');
 });

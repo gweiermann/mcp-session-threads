@@ -21,6 +21,8 @@ export function makeThread(raw = {}) {
     body: raw.body ? String(raw.body) : '',
     tags: cleanTags(raw.tags || (raw.kind ? [raw.kind] : [])),
     status: raw.status === 'resolved' ? 'resolved' : 'open',
+    // agent-controlled "parked" flag: parks the thread in a Deferred lane until resumed
+    deferred: raw.deferred === true,
     work: raw.work === 'working' || raw.work === 'done' ? raw.work : null,
     createdBy: raw.createdBy === 'user' ? 'user' : 'agent',
     actions: Array.isArray(raw.actions) ? raw.actions.map(String) : [...DEFAULT_ACTIONS],
@@ -175,6 +177,22 @@ export class BoardStore extends EventEmitter {
     const b = this.#require(id);
     const t = this.#thread(b, threadId);
     t.status = status === 'resolved' ? 'resolved' : 'open';
+    t.updatedAt = now();
+    this.#touch(b);
+    return t;
+  }
+
+  /**
+   * Park (deferred:true) or resume (deferred:false) a thread. When resuming,
+   * `text` is appended as an agent message (the "why pick it up now" note);
+   * appending it also makes the thread the freshest → back atop the review.
+   */
+  deferThread(id, threadId, { deferred, text } = {}) {
+    const b = this.#require(id);
+    const t = this.#thread(b, threadId);
+    if (text) t.messages.push({ author: 'agent', text: String(text), ts: now() });
+    t.deferred = !!deferred;
+    if (!deferred && t.status === 'resolved') t.status = 'open';
     t.updatedAt = now();
     this.#touch(b);
     return t;

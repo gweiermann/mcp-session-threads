@@ -7,8 +7,9 @@ export const INSTRUCTIONS = [
   'ALWAYS give the user the board URL up front (get_board_url, also returned by create_thread). It is STABLE for this project and does not change across restarts.',
   'THE BOARD IS THE ONLY THING THE USER SEES for this exchange — not your terminal. Put a set_summary TL;DR on top, make each thread self-contained, and when you reply in a thread START with a one-line summary of what the user asked so they know what you are responding to.',
   'Typical flow: create_thread per finding/question (freestyle `tags` like ["finding","high"] and a few tailored `actions` like ["Fix","Approve"]), set_summary, then call wait_for_feedback ONCE — it blocks a long time and returns the moment the user submits; only call again if it returns a "no feedback yet" notice.',
-  'Share progress so the UI can show it: start_working when you begin, work_on_thread(id) before a specific thread (it is highlighted), mark_thread_done(id) when finished, finish_working at the end.',
+  'The board tracks WHOSE TURN it is so the UI can show the right progress bar and ping the user. Share progress as you act: start_working when you begin, work_on_thread(id) before a specific thread (it is highlighted), mark_thread_done(id) when finished, finish_working at the end. wait_for_feedback automatically flips the board to "your turn" (plays the user a sound) while it blocks, then back when they submit — you do not manage that state yourself.',
   'Do NOT auto-resolve threads for heavy/uncertain changes — leave them open for the user to confirm; only resolve small, clear-cut items.',
+  'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore; when the moment is right, resume_thread un-parks it AND posts a message telling the user why to pick it up now.',
   'If threads end up on the wrong board you can self-serve: list_boards, use_board, import_threads, export_board, backup_board. Tool calls throw loudly on failure — never assume a write landed if the call errored.',
 ].join(' ');
 
@@ -69,6 +70,26 @@ export function registerTools(mcp, client) {
     return ok(`Reopened ${thread_id}.`);
   });
 
+  mcp.tool(
+    'defer_thread',
+    'Park a thread as "deferred": it drops into a Deferred lane below Waiting-on-agent and is excluded from the review counts and the "needs your attention" set, so the user can ignore it for now. Use for real work that is not a good time to tackle yet (blocked, out of scope for this pass, better done after X). Optionally pass a short `reason` (posted as a note on the thread).',
+    { thread_id: S, reason: S.optional() },
+    async ({ thread_id, reason }) => {
+      await client.call('/defer', { method: 'POST', body: { thread_id, deferred: true, text: reason ? `⏸ Deferred: ${reason}` : '' } });
+      return ok(`Deferred ${thread_id}${reason ? ` (${reason})` : ''}.`);
+    }
+  );
+
+  mcp.tool(
+    'resume_thread',
+    'Un-defer a parked thread AND post a message recommending the user pick it up now — `message` must explain WHY now is a good time (e.g. the blocker is cleared, the prerequisite landed). This brings the thread back to the top of "Needs your attention" as unread.',
+    { thread_id: S, message: S },
+    async ({ thread_id, message }) => {
+      await client.call('/defer', { method: 'POST', body: { thread_id, deferred: false, text: message } });
+      return ok(`Resumed ${thread_id} — user notified why now.`);
+    }
+  );
+
   mcp.tool('list_threads', 'List threads on this board (id, title, tags, status, work-state, message count).', { include_resolved: z.boolean().optional() }, async ({ include_resolved }) => {
     const j = await client.call('/threads');
     const threads = j.threads.filter((t) => (include_resolved ? true : t.status !== 'resolved'));
@@ -84,7 +105,7 @@ export function registerTools(mcp, client) {
 
   mcp.tool(
     'wait_for_feedback',
-    'Block until the user submits their batched replies/notes on the board, then return them. ONE long call (default ~55 min) — do not poll in a loop; it returns instantly on submit and sends progress so it will not time out. Create the threads BEFORE calling this.',
+    'Block until the user submits their batched replies/notes on the board, then return them. ONE long call (default ~55 min) — do not poll in a loop; it returns instantly on submit and sends progress so it will not time out. Automatically flips the board to "your turn" (title + sound) while blocking and back to idle on return. Create the threads BEFORE calling this.',
     { timeout_seconds: z.number().int().min(5).max(3600).optional() },
     async ({ timeout_seconds }, extra) => {
       const deadline = Date.now() + (timeout_seconds ?? 3300) * 1000;
@@ -97,6 +118,9 @@ export function registerTools(mcp, client) {
         }
       };
       const hb = setInterval(beat, 60000);
+      // Tell the board it is now the user's turn: the UI switches to the reply
+      // progress bar and pings them (sound/toast). Cleared on return below.
+      await client.call('/agent', { method: 'POST', body: { status: 'waiting', activity: 'Waiting for your feedback', currentThreadId: null } }).catch(() => {});
       try {
         while (Date.now() < deadline) {
           const secs = Math.min(25, Math.max(5, Math.ceil((deadline - Date.now()) / 1000)));
@@ -106,6 +130,7 @@ export function registerTools(mcp, client) {
         return ok(formatFeedback({ status: 'timeout' }));
       } finally {
         clearInterval(hb);
+        await client.call('/agent', { method: 'POST', body: { status: 'idle', activity: '' } }).catch(() => {});
       }
     }
   );
