@@ -126,7 +126,7 @@ export function createServer(store, hub, config) {
           return sendJson(res, 200, {
             threads: store.get(id).threads.map((t) => {
               const last = t.messages[t.messages.length - 1];
-              return { id: t.id, title: t.title, tags: t.tags, status: t.status, deferred: t.deferred, priority: t.priority, work: t.work, lastAuthor: last ? last.author : null, lastIntent: last ? last.intent || null : null, messages: t.messages.length };
+              return { id: t.id, title: t.title, tags: t.tags, status: t.status, deferred: t.deferred, pickupHint: t.pickupHint, priority: t.priority, work: t.work, lastAuthor: last ? last.author : null, lastIntent: last ? last.intent || null : null, messages: t.messages.length };
             }),
           });
         }
@@ -184,6 +184,9 @@ export function createServer(store, hub, config) {
               const r = store.reorderByPriority(id, body.thread_ids);
               return sendJson(res, 200, { ok: true, ...r });
             }
+            case 'title':
+              store.setTitle(id, body.thread_id, body.title);
+              return sendJson(res, 200, { ok: true });
             case 'summary':
               store.setSummary(id, body.text);
               return sendJson(res, 200, { ok: true });

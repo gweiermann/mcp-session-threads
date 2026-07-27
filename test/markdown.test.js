@@ -30,6 +30,15 @@ test('file-path links become file-links carrying the path in data-file', () => {
   assert.ok(!mdToHtml('[a](javascript:alert(1))').includes('file-link'), 'js scheme is not a file link');
 });
 
+test('thread:<id> links become in-board thread links', () => {
+  const html = mdToHtml('duplicate of [R6](thread:abc123)');
+  assert.ok(html.includes('class="thread-link"'), 'rendered as a thread link');
+  assert.ok(html.includes('href="#/t/abc123"'), 'points at the thread route (middle-clickable)');
+  // a bogus thread target must not become a link target
+  assert.ok(!mdToHtml('[x](thread:not/valid)').includes('thread-link'), 'only plain ids are accepted');
+  assert.ok(mdToHtml('[x](thread:not/valid)').includes('href="#"'), 'anything else stays inert');
+});
+
 test('inline + fenced code', () => {
   assert.ok(mdToHtml('use `foo` here').includes('<code>foo</code>'));
   const fenced = mdToHtml('```js\nconst a = 1;\n```');

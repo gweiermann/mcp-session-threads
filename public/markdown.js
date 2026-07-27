@@ -16,6 +16,10 @@ function inline(t) {
       return `<a href="${url.replace(/"/g, '%22')}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
     }
     if (/^#/.test(url)) return `<a href="${url.replace(/"/g, '%22')}">${txt}</a>`;
+    // thread:<id> -> a stable in-board link to another thread ("duplicate of R6"),
+    // rendered as a real hash href so middle-click opens it in a new tab too.
+    const th = url.match(/^thread:([\w-]+)$/i);
+    if (th) return `<a href="#/t/${th[1]}" class="thread-link" title="Open thread ${th[1]}">${txt}</a>`;
     // Any other URL scheme (javascript:, data:, vscode:, tel:, …) is neutralised.
     // A "scheme" has no "/" or "." before its ":", which keeps file paths like
     // "src/foo.ts:42" out of this branch.

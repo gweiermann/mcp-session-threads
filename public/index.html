@@ -84,6 +84,9 @@
 
       .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 22px 4px 10px; font-weight: 650; }
       .section-title:first-child { margin-top: 4px; }
+      /* a <button> that reads as a section title (collapsible group header) */
+      button.section-title { display: block; background: none; border: 0; padding: 0; font: inherit; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650; color: var(--muted); cursor: pointer; }
+      button.section-title:hover { color: var(--text); }
       .empty { color: var(--muted); text-align: center; padding: 40px; }
 
       /* ---- cards / rows ---- */
@@ -227,6 +230,8 @@
       .md a:hover { text-decoration: underline; }
       .md a.file-link { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border)); cursor: pointer; }
       .md a.file-link::before { content: '↗ '; opacity: 0.6; font-family: inherit; }
+      .md a.thread-link { background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 6px; padding: 0 6px; white-space: nowrap; }
+      .md a.thread-link::before { content: '💬 '; opacity: 0.7; }
       .md blockquote { border-left: 3px solid var(--border); margin: 6px 0; padding: 2px 10px; color: var(--muted); }
       .md hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
       .md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; background: color-mix(in srgb, var(--muted) 16%, transparent); border: 1px solid var(--border); border-radius: 5px; padding: 0.5px 4px; }
@@ -297,6 +302,8 @@
       let pendingSync = false; // we submitted while the agent was waiting; play a confirmation sound when it consumes the batch
       let keepScroll = false; // set for background re-renders: preserve the chat scroll instead of jumping to the bottom
       let prevScrollTop = 0; // chat scroll position captured just before a re-render
+      const RESOLVED_KEY = 'st-resolved-open-' + BOARD;
+      let resolvedOpen = localStorage.getItem(RESOLVED_KEY) === '1'; // collapsed by default
 
       const LS_DRAFTS = 'rt-drafts';
       const LS_NOTES = 'rt-notes';
@@ -492,8 +499,16 @@
         const deferred = state.threads.filter(isDeferred).sort(byFreshest);
         if (deferred.length) { const dt = document.createElement('div'); dt.className = 'section-title'; dt.textContent = `Deferred — ${deferred.length}`; inner.appendChild(dt); for (const t of deferred) inner.appendChild(threadRow(t)); }
 
+        // Resolved threads are history: collapsed by default (they pile up fast),
+        // and the collapsed/expanded choice is remembered per board.
         const resolved = state.threads.filter((t) => t.status === 'resolved').sort(byFreshest);
-        if (resolved.length) { const rt = document.createElement('div'); rt.className = 'section-title'; rt.textContent = 'Resolved'; inner.appendChild(rt); for (const t of resolved) inner.appendChild(threadRow(t)); }
+        if (resolved.length) {
+          const rt = document.createElement('button'); rt.className = 'section-title toggle';
+          rt.textContent = `${resolvedOpen ? '▾' : '▸'} Resolved — ${resolved.length}`;
+          rt.onclick = () => { resolvedOpen = !resolvedOpen; try { localStorage.setItem(RESOLVED_KEY, resolvedOpen ? '1' : '0'); } catch {} render(); };
+          inner.appendChild(rt);
+          if (resolvedOpen) for (const t of resolved) inner.appendChild(threadRow(t));
+        }
       }
 
       // ---- detail view ----
@@ -516,7 +531,14 @@
         // read/unread status pill — visible while navigating with j/k so you can
         // tell handled threads from ones still awaiting your response.
         if (t.status === 'resolved') top.appendChild(chip('resolved', 'resolved'));
-        else if (isDeferred(t)) top.appendChild(chip('⏸ deferred', 'deferred'));
+        else if (isDeferred(t)) {
+          top.appendChild(chip('⏸ deferred', 'deferred'));
+          // let the user un-park it themselves (the agent also does via resume_thread)
+          const un = document.createElement('button'); un.className = 'btn ghost small'; un.textContent = 'Un-defer';
+          un.title = 'Move this thread back into the active review';
+          un.onclick = () => undefer(t.id);
+          top.appendChild(un);
+        }
         else if (isUnread(t)) top.appendChild(chip('● unread', 'unread-chip'));
         else if (isStaged(t)) top.appendChild(chip('✓ replied (pending)', 'replied'));
         else if (awaitingAgent(t)) top.appendChild(chip(agentWorkingLast(t) ? '⏳ agent working' : '⏳ waiting on agent', 'waiting-agent'));
@@ -780,7 +802,9 @@
 
       async function submit() {
         const replies = [];
-        for (const t of openThreads()) {
+        // include DEFERRED threads too — a reply/resolve staged on a parked
+        // thread must still be sent (it un-parks it server-side).
+        for (const t of state.threads.filter((x) => x.status !== 'resolved')) {
           const d = drafts[t.id];
           if (d && d.saved && hasContent(d)) replies.push({ thread_id: t.id, action: d.action, text: d.text, resolve: d.resolve });
         }
@@ -912,6 +936,16 @@
       }
       function scrollSelIntoView() { const el = document.querySelector('.card.sel'); if (el) el.scrollIntoView({ block: 'nearest' }); }
       function scrollChat(dir) { const s = document.querySelector('.chat-scroll'); if (s) s.scrollBy({ top: dir * Math.round(s.clientHeight * 0.5), behavior: 'smooth' }); }
+
+      // un-park a deferred thread immediately (server write, not staged)
+      async function undefer(id) {
+        try {
+          const res = await fetch(API + '/defer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ thread_id: id, deferred: false }) });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          toast('Un-deferred — back in the active review ✓');
+          refresh();
+        } catch (e) { toast('Could not un-defer: ' + e.message, true); }
+      }
 
       // stage a resolve on a thread's reply (sent on submit); toggles
       function toggleResolve(id) {

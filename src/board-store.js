@@ -23,6 +23,9 @@ export function makeThread(raw = {}) {
     status: raw.status === 'resolved' ? 'resolved' : 'open',
     // agent-controlled "parked" flag: parks the thread in a Deferred lane until resumed
     deferred: raw.deferred === true,
+    // one-sentence reminder of WHEN to pick a deferred thread back up; surfaced
+    // to the agent on every wait_for_feedback so parked work is never forgotten
+    pickupHint: raw.pickupHint ? String(raw.pickupHint) : '',
     // agent-controlled priority; higher sorts first in the review list (0 = default)
     priority: Number.isFinite(raw.priority) ? raw.priority : 0,
     work: raw.work === 'working' || raw.work === 'done' ? raw.work : null,
@@ -221,13 +224,27 @@ export class BoardStore extends EventEmitter {
    * `text` is appended as an agent message (the "why pick it up now" note);
    * appending it also makes the thread the freshest → back atop the review.
    */
-  deferThread(id, threadId, { deferred, text } = {}) {
+  deferThread(id, threadId, { deferred, text, hint } = {}) {
     const b = this.#require(id);
     const t = this.#thread(b, threadId);
     if (text) t.messages.push({ author: 'agent', text: String(text), ts: now() });
     t.deferred = !!deferred;
+    t.pickupHint = deferred ? String(hint || '') : ''; // only parked threads carry a pickup hint
     if (!deferred && t.status === 'resolved') t.status = 'open';
     t.updatedAt = now();
+    this.#touch(b);
+    return t;
+  }
+
+  /**
+   * Rename a thread. Deliberately does NOT touch updatedAt: a retitle is an
+   * edit, not activity, so it never reorders the list or marks the thread unread.
+   */
+  setTitle(id, threadId, title) {
+    const b = this.#require(id);
+    const t = this.#thread(b, threadId);
+    const next = String(title || '').trim();
+    if (next) t.title = next;
     this.#touch(b);
     return t;
   }
@@ -274,6 +291,9 @@ export class BoardStore extends EventEmitter {
       if (r.resolve) t.status = 'resolved';
       else if (parts.length) t.status = 'open'; // any non-resolve reply reopens
       t.work = null; // the user responded -> any prior agent "done" marker is stale; the agent owes a fresh look
+      // The user engaged with a parked thread -> un-park it so it is picked up
+      // again (and so a resolve on a deferred thread really resolves it).
+      if (t.deferred) { t.deferred = false; t.pickupHint = ''; }
       t.updatedAt = ts;
       out.push({ thread_id: t.id, title: t.title, tags: t.tags, action: r.action || null, text, resolved: !!r.resolve });
     }

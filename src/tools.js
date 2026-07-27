@@ -14,14 +14,16 @@ export const INSTRUCTIONS = [
   'The board tracks WHOSE TURN it is so the UI can show the right progress bar and ping the user. Share progress as you act: start_working when you begin, work_on_thread(id) before a specific thread (it is highlighted), mark_thread_done(id) when finished, finish_working at the end. wait_for_feedback automatically flips the board to "your turn" (plays the user a sound) while it blocks, then back when they submit — you do not manage that state yourself.',
   'Do NOT auto-resolve threads for heavy/uncertain changes — leave them open for the user to confirm; only resolve small, clear-cut items.',
   'Order the review for the user: pass the most important threads first to prioritize_threads (or set `priority` on create_thread) so the highest-impact items sit at the top of "Needs your attention" and get answered first.',
-  'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore; when the moment is right, resume_thread un-parks it AND posts a message telling the user why to pick it up now.',
+  'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore — you MUST give a one-sentence `pickup_hint` saying when to resume. Every wait_for_feedback echoes your parked threads with their hints, so they stay your open work; when a hint\'s condition is met, resume_thread un-parks it AND posts a why-now message. If the user replies on a deferred thread it un-parks itself and returns to your checklist — always pick it up then.',
+  'Cross-reference threads with a `thread:<id>` markdown link — e.g. "duplicate of [R6](thread:abc123)" — which renders as a clickable chip that jumps straight to that thread. Never make the user hunt for a thread you mention by name. Link files the same way with a repo-relative path (`[config.ts:42](src/config.ts:42)`); those open in the editor.',
+  'Thread titles are the user\'s handle on a thread: keep them SHORT (~60 chars; the UI truncates) and STABLE. Do not reword a title each round — that destroys recognition. Only retitle_thread when the topic genuinely moved on (e.g. an open question became a concrete proposal/implementation), and keep the recognizable core wording of the original so it still reads as the same thread.',
   'If threads end up on the wrong board you can self-serve: list_boards, use_board, import_threads, export_board, backup_board. Tool calls throw loudly on failure — never assume a write landed if the call errored.',
 ].join(' ');
 
 const ok = (text) => ({ content: [{ type: 'text', text }] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function formatFeedback(p, outstanding = []) {
+function formatFeedback(p, outstanding = [], deferred = []) {
   if (p.status === 'timeout') {
     return 'No feedback submitted within the wait window. If you still expect input, call wait_for_feedback again (it blocks a long time per call; the user can stop you anytime to talk in chat).';
   }
@@ -40,19 +42,30 @@ function formatFeedback(p, outstanding = []) {
     lines.push('', `⚠ ${outstanding.length} thread(s) are awaiting YOUR response (the ball is in your court — this includes the replies above plus any carried over from before). Address EVERY one this cycle: reply with add_message, or if no reply is warranted, mark_thread_done / resolve_thread / defer_thread. A thread only drops off this list once you reply, mark it done, resolve it, or defer it:`);
     for (const t of outstanding) lines.push(`  • ${t.id} — "${t.title}"`);
   }
+  if (deferred.length) {
+    lines.push('', `⏸ ${deferred.length} deferred thread(s) parked by you — not on the user's plate, but still YOUR open work. Check each pickup condition; when one is met, resume_thread it (with a why-now message). They are also un-parked automatically the moment the user replies to them:`);
+    for (const t of deferred) lines.push(`  • ${t.id} — "${t.title}" → pick up when: ${t.pickupHint || '(no hint recorded)'}`);
+  }
   lines.push('', 'When you reply in a thread, start with a one-line summary of what the user asked. Address all threads listed above, then call wait_for_feedback again if you still expect input.');
   return lines.join('\n');
 }
 
-/** Threads where the ball is in the agent's court and it hasn't been parked/finished. */
-async function gatherOutstanding(client) {
+/**
+ * Split the board into what the agent still owes:
+ *  - outstanding: ball in the agent's court (user replied last, or its own last
+ *    message was a "status" = still working), excluding parked/finished threads.
+ *  - deferred: threads it parked, with their pickup conditions (still its work).
+ */
+async function gatherAgentWork(client) {
   try {
     const { threads } = await client.call('/threads');
-    // ball in the agent's court = user replied last, OR the agent's last message
-    // was a "status" (still working) — either way the agent owes a follow-up.
-    return threads.filter((t) => t.status === 'open' && !t.deferred && t.work !== 'done' && (t.lastAuthor === 'user' || t.lastIntent === 'status'));
+    const open = threads.filter((t) => t.status === 'open');
+    return {
+      outstanding: open.filter((t) => !t.deferred && t.work !== 'done' && (t.lastAuthor === 'user' || t.lastIntent === 'status')),
+      deferred: open.filter((t) => t.deferred),
+    };
   } catch {
-    return [];
+    return { outstanding: [], deferred: [] };
   }
 }
 
@@ -94,11 +107,21 @@ export function registerTools(mcp, client) {
 
   mcp.tool(
     'defer_thread',
-    'Park a thread as "deferred": it drops into a Deferred lane below Waiting-on-agent and is excluded from the review counts and the "needs your attention" set, so the user can ignore it for now. Use for real work that is not a good time to tackle yet (blocked, out of scope for this pass, better done after X). Optionally pass a short `reason` (posted as a note on the thread).',
-    { thread_id: S, reason: S.optional() },
-    async ({ thread_id, reason }) => {
-      await client.call('/defer', { method: 'POST', body: { thread_id, deferred: true, text: reason ? `⏸ Deferred: ${reason}` : '' } });
-      return ok(`Deferred ${thread_id}${reason ? ` (${reason})` : ''}.`);
+    'Park a thread as "deferred": it drops into a Deferred lane below Waiting-on-agent and is excluded from the review counts and the "needs your attention" set, so the user can ignore it for now. Use for real work that is not a good time to tackle yet (blocked, out of scope for this pass, better done after X). `pickup_hint` is REQUIRED: one sentence stating WHEN to pick it back up (e.g. "resume once the stack is rebased") — it is echoed to you on every wait_for_feedback so parked work is never forgotten. Optionally pass `reason` (posted as a note on the thread). NOTE: if the user replies on a deferred thread it is un-parked automatically and lands back on your checklist.',
+    { thread_id: S, pickup_hint: S, reason: S.optional() },
+    async ({ thread_id, pickup_hint, reason }) => {
+      await client.call('/defer', { method: 'POST', body: { thread_id, deferred: true, hint: pickup_hint, text: reason ? `⏸ Deferred: ${reason}` : '' } });
+      return ok(`Deferred ${thread_id} — pick up when: ${pickup_hint}`);
+    }
+  );
+
+  mcp.tool(
+    'retitle_thread',
+    'Rename a thread when its TOPIC has genuinely moved on (e.g. it began as a question and is now a concrete proposal/implementation) so the title reflects the current subject, not the original question. Do NOT retitle every round — the user tracks threads by title, so churn is costly. Keep the recognizable core wording of the original title and stay SHORT (~60 chars max; long titles are truncated in the UI). Never renames just to reword.',
+    { thread_id: S, title: S },
+    async ({ thread_id, title }) => {
+      await client.call('/title', { method: 'POST', body: { thread_id, title } });
+      return ok(`Retitled ${thread_id} -> "${title}".`);
     }
   );
 
@@ -178,7 +201,7 @@ export function registerTools(mcp, client) {
             await sleep(Math.min(1000 * fails, 3000));
             continue;
           }
-          if (p.status !== 'timeout') return ok(formatFeedback(p, await gatherOutstanding(client)));
+          if (p.status !== 'timeout') { const w = await gatherAgentWork(client); return ok(formatFeedback(p, w.outstanding, w.deferred)); }
         }
         return ok(formatFeedback({ status: 'timeout' }));
       } finally {

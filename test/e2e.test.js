@@ -127,7 +127,7 @@ test('defer_thread parks a thread; resume_thread un-parks it and posts a why-now
   const tid = textOf(await E.client.callTool({ name: 'create_thread', arguments: { title: 'Later work' } })).match(/thread (\w+)/)[1];
   const threadState = async () => (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).threads.find((x) => x.id === tid);
 
-  await E.client.callTool({ name: 'defer_thread', arguments: { thread_id: tid, reason: 'blocked on the stack landing' } });
+  await E.client.callTool({ name: 'defer_thread', arguments: { thread_id: tid, pickup_hint: 'resume once the stack lands', reason: 'blocked on the stack landing' } });
   let th = await threadState();
   assert.equal(th.deferred, true, 'defer_thread sets deferred:true');
   assert.ok(th.messages.some((m) => m.author === 'agent' && /Deferred: blocked/.test(m.text)), 'defer reason posted as an agent note');
@@ -155,15 +155,16 @@ test('wait_for_feedback reminds the agent of every thread awaiting its response 
   await submit({ replies: [addr, done, defer].map((thread_id) => ({ thread_id, action: 'Look' })), notes: '' });
   // agent parks two of them
   await G.client.callTool({ name: 'mark_thread_done', arguments: { thread_id: done } });
-  await G.client.callTool({ name: 'defer_thread', arguments: { thread_id: defer } });
+  await G.client.callTool({ name: 'defer_thread', arguments: { thread_id: defer, pickup_hint: 'resume when the user asks' } });
 
   const out = textOf(await G.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
-  // assert against the CHECKLIST section only (the "Feedback received" echo lists all submitted ids)
+  // assert against the CHECKLIST section only — the "Feedback received" echo lists
+  // every submitted id, and the parked-threads section follows the checklist.
   assert.match(out, /awaiting YOUR response/, 'includes the outstanding checklist');
-  const checklist = out.split('awaiting YOUR response')[1] || '';
+  const checklist = (out.split('awaiting YOUR response')[1] || '').split('deferred thread')[0];
   assert.ok(checklist.includes(addr), 'reminds about the un-parked awaiting-agent thread');
   assert.ok(!checklist.includes(done), 'a thread the agent marked done is NOT in the checklist');
-  assert.ok(!checklist.includes(defer), 'a deferred thread is NOT in the checklist');
+  assert.ok(!checklist.includes(defer), 'a deferred thread is NOT in the reply checklist');
 });
 
 test('an agent "status" message keeps the thread in the agent-court checklist; a plain reply does not', async (t) => {
@@ -235,6 +236,59 @@ test('create_thread insert_after places the new thread right after the anchor (n
   const ts = (x) => x.updatedAt || x.createdAt;
   const order = s.threads.slice().sort((a, b) => (b.priority - a.priority) || (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : 0)).map((x) => x.id);
   assert.equal(order[order.indexOf(anchor) + 1], split, 'the split thread sorts immediately after its anchor');
+});
+
+test('deferred threads: pickup hints reach the agent, a user reply un-parks, and a resolve resolves', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const D = makeClient('D2', '/proj/defer2');
+  t.after(async () => { await D.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await D.client.connect(D.transport);
+  const id = boardId(await urlOf(D.client));
+  const mk = async (title) => textOf(await D.client.callTool({ name: 'create_thread', arguments: { title } })).match(/thread (\w+)/)[1];
+  const parked = await mk('Parked work');
+  const replied = await mk('Parked then replied');
+  const closed = await mk('Parked then resolved');
+  const ping = await mk('Something to submit with');
+
+  for (const [tid, hint] of [[parked, 'resume after the stack rebases'], [replied, 'resume next week'], [closed, 'resume never, probably']]) {
+    await D.client.callTool({ name: 'defer_thread', arguments: { thread_id: tid, pickup_hint: hint } });
+  }
+  const state = async () => (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).threads;
+  assert.equal((await state()).find((x) => x.id === parked).pickupHint, 'resume after the stack rebases', 'pickup hint stored');
+
+  // user replies on one parked thread and resolves another (as the UI submits them)
+  await fetch(`${BASE}/api/b/${id}/submit`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ replies: [{ thread_id: replied, text: 'actually do it now' }, { thread_id: closed, action: 'drop it', resolve: true }, { thread_id: ping, action: 'ping' }], notes: '' }),
+  });
+  let th = await state();
+  assert.equal(th.find((x) => x.id === replied).deferred, false, 'a user reply un-parks a deferred thread');
+  assert.equal(th.find((x) => x.id === closed).status, 'resolved', 'resolving a deferred thread really resolves it');
+  assert.equal(th.find((x) => x.id === closed).deferred, false, 'and clears its deferred flag');
+
+  const out = textOf(await D.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
+  assert.match(out, /deferred thread\(s\) parked by you/, 'wait_for_feedback reports parked threads');
+  assert.ok(out.includes('resume after the stack rebases'), 'the pickup hint is injected into the result');
+  const checklist = out.split('awaiting YOUR response')[1].split('deferred thread')[0];
+  assert.ok(checklist.includes(replied), 'the un-parked thread is on the agent checklist');
+  assert.ok(!checklist.includes(parked), 'a still-parked thread is not on the reply checklist');
+});
+
+test('retitle_thread renames without reordering or marking the thread unread', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const R = makeClient('R2', '/proj/retitle');
+  t.after(async () => { await R.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await R.client.connect(R.transport);
+  const id = boardId(await urlOf(R.client));
+  const tid = textOf(await R.client.callTool({ name: 'create_thread', arguments: { title: 'Q: should we cache this?' } })).match(/thread (\w+)/)[1];
+  const before = (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).threads[0];
+
+  await R.client.callTool({ name: 'retitle_thread', arguments: { thread_id: tid, title: 'Cache this: LRU proposal' } });
+  const after = (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).threads[0];
+  assert.equal(after.title, 'Cache this: LRU proposal', 'title updated');
+  assert.equal(after.updatedAt, before.updatedAt, 'updatedAt untouched -> no reshuffle / no false unread');
 });
 
 test('wait_for_feedback survives a daemon restart mid-wait (recovers without a manual retry)', async (t) => {
