@@ -52,8 +52,8 @@ function normalizeBoard(raw = {}) {
     // durable free-form note submissions; each entry is its own {id,text,ts,consumed}
     notes: Array.isArray(raw.notes) ? raw.notes.map((n) => ({ id: n.id || shortId(), text: String(n.text || ''), ts: n.ts || now(), consumed: !!n.consumed })) : [],
     agent: raw.agent && typeof raw.agent === 'object'
-      ? { status: raw.agent.status || 'idle', activity: raw.agent.activity || '', currentThreadId: raw.agent.currentThreadId || null, updatedAt: raw.agent.updatedAt || null }
-      : { status: 'idle', activity: '', currentThreadId: null, updatedAt: null },
+      ? { status: raw.agent.status || 'idle', activity: raw.agent.activity || '', currentThreadId: raw.agent.currentThreadId || null, consumedAt: raw.agent.consumedAt || null, finishedAt: raw.agent.finishedAt || null, updatedAt: raw.agent.updatedAt || null }
+      : { status: 'idle', activity: '', currentThreadId: null, consumedAt: null, finishedAt: null, updatedAt: null },
     createdAt: raw.createdAt || now(),
     updatedAt: raw.updatedAt || now(),
   };
@@ -283,11 +283,15 @@ export class BoardStore extends EventEmitter {
     return b;
   }
 
-  setAgent(id, { status, activity, currentThreadId, thread_id: threadId, work } = {}) {
+  setAgent(id, { status, activity, currentThreadId, thread_id: threadId, work, consumed } = {}) {
     const b = this.#require(id);
-    if (typeof status === 'string') b.agent.status = status;
+    if (typeof status === 'string') {
+      b.agent.status = status;
+      if (status === 'done') b.agent.finishedAt = now(); // marks the end of a work round
+    }
     if (typeof activity === 'string') b.agent.activity = activity;
     if (currentThreadId !== undefined) b.agent.currentThreadId = currentThreadId;
+    if (consumed) b.agent.consumedAt = now(); // the agent just picked up a submitted batch
     b.agent.updatedAt = now();
     if (threadId && (work === 'working' || work === 'done' || work === null)) {
       const t = b.threads.find((x) => x.id === threadId);

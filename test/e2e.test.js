@@ -114,7 +114,7 @@ test('wait_for_feedback flips the board to "your turn" while blocking, and back 
 
   await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: tid, action: 'Approve' }], notes: '' }) });
   assert.ok(textOf(await waiting).includes('Approve'), 'submit unblocks the call with the reply');
-  assert.ok(await until('idle'), 'board returns to "idle" once feedback is delivered');
+  assert.ok(await until('working'), 'board flips to "working" once the agent picks up the batch');
 });
 
 test('defer_thread parks a thread; resume_thread un-parks it and posts a why-now message', async (t) => {
@@ -289,6 +289,47 @@ test('retitle_thread renames without reordering or marking the thread unread', a
   const after = (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).threads[0];
   assert.equal(after.title, 'Cache this: LRU proposal', 'title updated');
   assert.equal(after.updatedAt, before.updatedAt, 'updatedAt untouched -> no reshuffle / no false unread');
+});
+
+test('wait_for_feedback stamps consumedAt (agent picked up the batch) and status "working"', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const C = makeClient('C2', '/proj/consume');
+  t.after(async () => { await C.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await C.client.connect(C.transport);
+  const id = boardId(await urlOf(C.client));
+  const tid = textOf(await C.client.callTool({ name: 'create_thread', arguments: { title: 'T' } })).match(/thread (\w+)/)[1];
+
+  const agent = async () => (await (await fetch(`${BASE}/api/b/${id}/state`)).json()).agent;
+  assert.ok(!(await agent()).consumedAt, 'no consumedAt before any pickup');
+
+  // submit first so the wait returns immediately, then the agent "picks up"
+  await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: tid, action: 'go' }], notes: '' }) });
+  await C.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } });
+  const a = await agent();
+  assert.ok(a.consumedAt, 'consumedAt stamped once the agent received the batch');
+  assert.equal(a.status, 'working', 'board is left in "working" after pickup (drives the start sound)');
+});
+
+test('a reply the agent finishes without answering is flagged ignored (consumedAt/finishedAt vs reply ts)', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const G = makeClient('G3', '/proj/ignored');
+  t.after(async () => { await G.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await G.client.connect(G.transport);
+  const id = boardId(await urlOf(G.client));
+  const tid = textOf(await G.client.callTool({ name: 'create_thread', arguments: { title: 'Skip me' } })).match(/thread (\w+)/)[1];
+
+  // user replies, agent picks it up, then finishes WITHOUT answering this thread
+  await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: tid, action: 'please look' }], notes: '' }) });
+  await G.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }); // stamps consumedAt >= reply ts
+  await G.client.callTool({ name: 'finish_working', arguments: {} }); // stamps finishedAt >= reply ts, no reply posted
+
+  const st = await (await fetch(`${BASE}/api/b/${id}/state`)).json();
+  const th = st.threads.find((x) => x.id === tid);
+  const replyTs = th.messages[th.messages.length - 1].ts;
+  assert.equal(th.messages[th.messages.length - 1].author, 'user', 'thread still ends on the user reply (agent never answered)');
+  assert.ok(st.agent.consumedAt >= replyTs && st.agent.finishedAt >= replyTs, 'both stamps are past the reply -> UI renders "ignored by agent"');
 });
 
 test('use_board: named boards give the same project separate streams, and the choice survives a restart', async (t) => {

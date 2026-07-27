@@ -178,6 +178,7 @@ export function registerTools(mcp, client) {
       const markWaiting = () => client.call('/agent', { method: 'POST', body: { status: 'waiting', activity: 'Waiting for your feedback', currentThreadId: null } }).catch(() => {});
       await markWaiting();
       let fails = 0; // consecutive reconnect failures
+      let received = false; // got a real batch (vs timed out) -> stay "working" on return
       try {
         while (Date.now() < deadline) {
           const secs = Math.min(25, Math.max(5, Math.ceil((deadline - Date.now()) / 1000)));
@@ -201,12 +202,22 @@ export function registerTools(mcp, client) {
             await sleep(Math.min(1000 * fails, 3000));
             continue;
           }
-          if (p.status !== 'timeout') { const w = await gatherAgentWork(client); return ok(formatFeedback(p, w.outstanding, w.deferred)); }
+          if (p.status !== 'timeout') {
+            received = true;
+            const w = await gatherAgentWork(client);
+            // The agent has now PICKED UP the batch and is working on it: stamp
+            // consumedAt (drives the "agent started working" sound + flips the
+            // user's replies from "replied" to "waiting on agent").
+            await client.call('/agent', { method: 'POST', body: { status: 'working', activity: 'Working on your feedback', currentThreadId: null, consumed: true } }).catch(() => {});
+            return ok(formatFeedback(p, w.outstanding, w.deferred));
+          }
         }
         return ok(formatFeedback({ status: 'timeout' }));
       } finally {
         clearInterval(hb);
-        await client.call('/agent', { method: 'POST', body: { status: 'idle', activity: '' } }).catch(() => {});
+        // only clear the "your turn" state on a timeout/abort — on a real pickup
+        // we intentionally left the board in "working" above.
+        if (!received) await client.call('/agent', { method: 'POST', body: { status: 'idle', activity: '' } }).catch(() => {});
       }
     }
   );
