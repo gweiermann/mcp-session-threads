@@ -17,7 +17,7 @@ export const INSTRUCTIONS = [
   'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore — you MUST give a one-sentence `pickup_hint` saying when to resume. Every wait_for_feedback echoes your parked threads with their hints, so they stay your open work; when a hint\'s condition is met, resume_thread un-parks it AND posts a why-now message. If the user replies on a deferred thread it un-parks itself and returns to your checklist — always pick it up then.',
   'Cross-reference threads with a `thread:<id>` markdown link — e.g. "duplicate of [R6](thread:abc123)" — which renders as a clickable chip that jumps straight to that thread. Never make the user hunt for a thread you mention by name. Link files the same way with a repo-relative path (`[config.ts:42](src/config.ts:42)`); those open in the editor.',
   'Thread titles are the user\'s handle on a thread: keep them SHORT (~60 chars; the UI truncates) and STABLE. Do not reword a title each round — that destroys recognition. Only retitle_thread when the topic genuinely moved on (e.g. an open question became a concrete proposal/implementation), and keep the recognizable core wording of the original so it still reads as the same thread.',
-  'If threads end up on the wrong board you can self-serve: list_boards, use_board, import_threads, export_board, backup_board. Tool calls throw loudly on failure — never assume a write landed if the call errored.',
+  'One project = one board by default (same repo/branch shares it). If the user wants to review a SEPARATE area of the same repo on its own board, use_board({name:"…"}) opens a named board for it (persists across restarts; "main" returns to the default). If threads end up on the wrong board you can also self-serve: list_boards, use_board({board_id}), import_threads, export_board, backup_board. Tool calls throw loudly on failure — never assume a write landed if the call errored.',
 ].join(' ');
 
 const ok = (text) => ({ content: [{ type: 'text', text }] });
@@ -239,12 +239,20 @@ export function registerTools(mcp, client) {
     const j = await client.root('/api/boards');
     return ok(JSON.stringify(j.boards, null, 2));
   });
-  mcp.tool('use_board', 'Switch THIS session to an existing board by id (e.g. to recover stranded threads). Reverts to the stable per-project board on the next restart unless switched again.', { board_id: S }, async ({ board_id }) => {
-    const r = await client.root(`/api/b/${board_id}/state`).catch(() => null);
-    if (!r) return ok(`No board ${board_id}.`);
-    client.setBoard(board_id);
-    return ok(`Now using board ${board_id} (${r.threads.length} threads). URL: ${client.getBoardUrl()}`);
-  });
+  mcp.tool(
+    'use_board',
+    'Switch to a DIFFERENT board for the SAME project — use this to keep a separate review stream for another area of the repo (same repo/branch otherwise shares ONE board). `name` opens a named board for this project, creating it if needed (e.g. "storefront-refactor"); pass "main" (or omit) to return to the project\'s default board. Alternatively pass `board_id` to jump to a specific existing board (e.g. recovering stranded threads). The choice PERSISTS across restarts for this project until you switch again. Use list_boards to see what exists.',
+    { name: S.optional(), board_id: S.optional() },
+    async ({ name, board_id }) => {
+      if (board_id) {
+        const r = await client.useBoardId(board_id);
+        return r ? ok(`Now on board ${board_id}. Threads go here until you switch back (persists across restarts). URL: ${client.getBoardUrl()}`) : ok(`No board ${board_id}.`);
+      }
+      const r = await client.useNamedBoard(name);
+      const count = await client.call('/threads').then((j) => j.threads.length).catch(() => 0);
+      return ok(`Now on the "${r.name}" board (${count} thread${count === 1 ? '' : 's'}) — ${client.getBoardUrl()}. New threads go here until you switch back (persists across restarts). Share this URL with the user.`);
+    }
+  );
   mcp.tool('import_threads', 'Copy threads (with full message history) from another board into THIS board. mode "append" (default) or "replace".', { from_board_id: S, mode: z.enum(['append', 'replace']).optional() }, async ({ from_board_id, mode }) => {
     const src = await client.root(`/api/b/${from_board_id}/export`);
     const j = await client.call('/import', { method: 'POST', body: { threads: src.threads, summary: src.summary, mode: mode || 'append' } });

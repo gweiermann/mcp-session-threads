@@ -291,6 +291,40 @@ test('retitle_thread renames without reordering or marking the thread unread', a
   assert.equal(after.updatedAt, before.updatedAt, 'updatedAt untouched -> no reshuffle / no false unread');
 });
 
+test('use_board: named boards give the same project separate streams, and the choice survives a restart', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const S1 = makeClient('S1', '/proj/multi');
+  t.after(async () => { await S1.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await S1.client.connect(S1.transport);
+
+  const mainUrl = await urlOf(S1.client);
+  const mainId = boardId(mainUrl);
+  await S1.client.callTool({ name: 'create_thread', arguments: { title: 'On the main board' } });
+
+  // switch to a named board -> a DIFFERENT board, empty
+  const switched = textOf(await S1.client.callTool({ name: 'use_board', arguments: { name: 'storefront-refactor' } }));
+  const areaUrl = await urlOf(S1.client);
+  const areaId = boardId(areaUrl);
+  assert.notEqual(areaId, mainId, 'a named board is a different board');
+  assert.match(switched, /storefront-refactor/);
+  const areaThreads = (await (await fetch(`${BASE}/api/b/${areaId}/state`)).json()).threads;
+  assert.equal(areaThreads.length, 0, 'the named board starts empty (separate stream)');
+  await S1.client.callTool({ name: 'create_thread', arguments: { title: 'On the area board' } });
+
+  // a FRESH session (same project key) simulates a restart: it must land on the named board
+  const S2 = makeClient('S2', '/proj/multi');
+  await S2.client.connect(S2.transport);
+  t.after(async () => { await S2.client.close().catch(() => {}); });
+  assert.equal(boardId(await urlOf(S2.client)), areaId, 'the named-board choice persists across restart');
+
+  // returning to main brings the original board (and its thread) back
+  await S2.client.callTool({ name: 'use_board', arguments: { name: 'main' } });
+  assert.equal(boardId(await urlOf(S2.client)), mainId, 'use_board main returns to the default board');
+  const back = JSON.parse(textOf(await S2.client.callTool({ name: 'list_threads', arguments: {} })));
+  assert.ok(back.threads.some((x) => x.title === 'On the main board'), 'the main board still has its own thread');
+});
+
 test('wait_for_feedback survives a daemon restart mid-wait (recovers without a manual retry)', async (t) => {
   killPort();
   rmSync(DATA, { recursive: true, force: true });
