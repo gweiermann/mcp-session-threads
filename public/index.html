@@ -98,7 +98,9 @@
       .card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent), var(--shadow); opacity: 1; }
       .keyhint { font-size: 12px; color: var(--muted); margin: 0 4px 12px; }
       .keyhint kbd { font-family: ui-monospace, Menlo, monospace; font-size: 11px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
-      .row-head { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+      /* an <a> (so middle-click opens a new tab) but styled as the row it was */
+      .row-head { display: flex; align-items: center; gap: 9px; cursor: pointer; color: inherit; text-decoration: none; }
+      .row-head:hover { text-decoration: none; }
       .row-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 9px; }
       .dot-slot { width: 8px; flex: none; display: flex; align-self: center; }
       .rtitle { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; }
@@ -293,6 +295,8 @@
       let selIndex = 0; // keyboard-highlighted row in the list (index into open threads)
       let wantFocus = false; // focus the composer on the next detail render (set by mouse nav / the `e` key, NOT j/k)
       let pendingSync = false; // we submitted while the agent was waiting; play a confirmation sound when it consumes the batch
+      let keepScroll = false; // set for background re-renders: preserve the chat scroll instead of jumping to the bottom
+      let prevScrollTop = 0; // chat scroll position captured just before a re-render
 
       const LS_DRAFTS = 'rt-drafts';
       const LS_NOTES = 'rt-notes';
@@ -356,6 +360,15 @@
         for (const t of openThreads()) if (!known.has(t.id)) seq.push(t);
         return seq;
       }
+      // The sequence next/prev walks depends on which LANE the current thread is in:
+      // deferred threads navigate among deferred, resolved among resolved, and open
+      // threads follow the frozen open sweep — so you never jump lanes while paging.
+      function navListFor(id) {
+        const t = state.threads.find((x) => x.id === id);
+        if (t && t.status === 'resolved') return state.threads.filter((x) => x.status === 'resolved').sort(byFreshest);
+        if (t && isDeferred(t)) return state.threads.filter(isDeferred).sort(byFreshest);
+        return navSeq();
+      }
 
       function persistDrafts() { try { localStorage.setItem(LS_DRAFTS, JSON.stringify(drafts)); } catch {} }
       function persistNotes() { try { localStorage.setItem(LS_NOTES, notes); } catch {} }
@@ -414,7 +427,9 @@
         const deferred = isDeferred(t);
         const card = document.createElement('div');
         card.className = 'card' + (resolved ? ' resolved' : '') + (deferred ? ' deferred' : '') + (answered ? ' replied' : '') + (unread ? ' unread' : '');
-        const head = document.createElement('div'); head.className = 'row-head';
+        // A real <a href> so middle-click / cmd-click opens the thread in a new
+        // tab; a plain left click is intercepted below for in-page navigation.
+        const head = document.createElement('a'); head.className = 'row-head'; head.href = '#/t/' + t.id;
 
         const main = document.createElement('div'); main.className = 'row-main';
         const dotSlot = document.createElement('span'); dotSlot.className = 'dot-slot';
@@ -431,7 +446,13 @@
         else if (awaitingAgent(t)) head.appendChild(chip(agentWorkingLast(t) ? '⏳ agent working' : '⏳ waiting on agent', 'waiting-agent'));
 
         const chev = document.createElement('span'); chev.className = 'chev'; chev.textContent = '›'; head.appendChild(chev);
-        head.onclick = () => openThread(t.id, true);
+        // plain left click -> in-page navigation; let cmd/ctrl/shift/middle-click
+        // through so the browser opens the thread in a new tab/window itself.
+        head.onclick = (e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.preventDefault();
+          openThread(t.id, true);
+        };
         card.appendChild(head);
         return card;
       }
@@ -480,7 +501,7 @@
         const t = state.threads.find((x) => x.id === id);
         if (!t) { goList(); return; }
         main.classList.add('detail');
-        const open = navSeq(); // frozen sweep order — do NOT re-sort while paging
+        const open = navListFor(id); // walk within the current thread's lane (open sweep / deferred / resolved)
         const idx = open.findIndex((x) => x.id === id);
         const liveIdx = openThreads().findIndex((x) => x.id === id);
         if (liveIdx >= 0) selIndex = liveIdx; // list highlight follows the live sort for when you return
@@ -549,7 +570,10 @@
         }
         wantFocus = false;
 
-        requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+        // Jump to the newest message when you OPEN a thread, but never yank the
+        // view on a background re-render (a toast/state update while you read).
+        const restoreTo = keepScroll ? prevScrollTop : null;
+        requestAnimationFrame(() => { scroll.scrollTop = restoreTo === null ? scroll.scrollHeight : restoreTo; });
       }
 
       function chatBubble(author, html) {
@@ -632,7 +656,10 @@
         ci.appendChild(meta);
 
         foot.appendChild(ci);
-        requestAnimationFrame(() => { sync(); const s = document.querySelector('.chat-scroll'); if (s) s.scrollTop = s.scrollHeight; });
+        // size the textarea; only pin to the newest message when this is a real
+        // open/navigation, not a background re-render while you are reading.
+        const pin = !keepScroll;
+        requestAnimationFrame(() => { sync(); if (pin) { const s = document.querySelector('.chat-scroll'); if (s) s.scrollTop = s.scrollHeight; } });
         return foot;
       }
 
@@ -660,6 +687,10 @@
       function rerenderMain() { render(); }
       function render() {
         const r = route();
+        // remember where the chat was scrolled before we wipe the DOM, so a
+        // background re-render can put it back (see renderDetail).
+        const prevScroll = document.querySelector('.chat-scroll');
+        prevScrollTop = prevScroll ? prevScroll.scrollTop : 0;
         const main = $('main'); main.innerHTML = ''; main.classList.remove('detail');
         if (r.name === 'detail' && state.threads.find((x) => x.id === r.id)) {
           if (!navOrder.length) refreshNavOrder(); // baseline when deep-linking straight into a thread
@@ -718,7 +749,7 @@
       // order so replying/resolving doesn't shuffle where "next"/"prev" land.
       function goRel(delta, focus) {
         const r = route(); if (r.name !== 'detail') return;
-        const o = navSeq(); const i = o.findIndex((x) => x.id === r.id);
+        const o = navListFor(r.id); const i = o.findIndex((x) => x.id === r.id);
         const n = o[i + delta]; if (n) openThread(n.id, !!focus);
       }
 
@@ -739,7 +770,7 @@
       function updateGutter(r) {
         const prev = $('gutterPrev'), next = $('gutterNext');
         if (r.name !== 'detail') { prev.hidden = true; next.hidden = true; return; }
-        const open = navSeq();
+        const open = navListFor(r.id);
         const idx = open.findIndex((x) => x.id === r.id);
         prev.hidden = false; next.hidden = false;
         prev.disabled = idx <= 0; next.disabled = idx < 0 || idx >= open.length - 1;
@@ -785,7 +816,10 @@
         const ae = document.activeElement;
         const keepFocus = ae && ae.tagName === 'TEXTAREA' && ae.closest && ae.closest('.chat-composer');
         const caret = keepFocus ? { start: ae.selectionStart, end: ae.selectionEnd } : null;
+        // background update (SSE/poll), not a user navigation -> keep the reading position
+        keepScroll = !firstLoad;
         state = next; render();
+        keepScroll = false;
         if (caret) {
           const ta = document.querySelector('.chat-composer textarea');
           if (ta) { ta.focus(); try { ta.setSelectionRange(caret.start, caret.end); } catch { /* ignore */ } }
