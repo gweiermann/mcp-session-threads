@@ -162,6 +162,10 @@ export function createServer(store, hub, config) {
           const payload = await hub.wait(id, secs * 1000);
           payload.notes = store.drainNotes(id);
           if (payload.status === 'timeout' && payload.notes.length) payload.status = 'feedback';
+          // The agent just RECEIVED a batch (replies and/or notes). Stamp it here,
+          // in the daemon, so the "agent picked up your feedback" sound + the
+          // reply-status flip fire regardless of the proxy/tool version.
+          if (payload.status !== 'timeout') store.setAgent(id, { status: 'working', activity: 'Working on your feedback', currentThreadId: null, consumed: true });
           return sendJson(res, 200, payload);
         }
 

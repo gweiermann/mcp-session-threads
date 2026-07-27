@@ -204,11 +204,9 @@ export function registerTools(mcp, client) {
           }
           if (p.status !== 'timeout') {
             received = true;
+            // The daemon stamps consumedAt + flips the board to "working" inside
+            // /wait when it hands over the batch (so it is version-independent).
             const w = await gatherAgentWork(client);
-            // The agent has now PICKED UP the batch and is working on it: stamp
-            // consumedAt (drives the "agent started working" sound + flips the
-            // user's replies from "replied" to "waiting on agent").
-            await client.call('/agent', { method: 'POST', body: { status: 'working', activity: 'Working on your feedback', currentThreadId: null, consumed: true } }).catch(() => {});
             return ok(formatFeedback(p, w.outstanding, w.deferred));
           }
         }
