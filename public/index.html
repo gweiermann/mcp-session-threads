@@ -304,6 +304,8 @@
       let prevScrollTop = 0; // chat scroll position captured just before a re-render
       const RESOLVED_KEY = 'st-resolved-open-' + BOARD;
       let resolvedOpen = localStorage.getItem(RESOLVED_KEY) === '1'; // collapsed by default
+      const fullThreads = {}; // id -> full thread, lazily fetched for truncated (resolved) ones
+      const loadingFull = {}; // id -> true while a fetch is in flight
 
       const LS_DRAFTS = 'rt-drafts';
       const LS_NOTES = 'rt-notes';
@@ -513,8 +515,11 @@
 
       // ---- detail view ----
       function renderDetail(main, id) {
-        const t = state.threads.find((x) => x.id === id);
-        if (!t) { goList(); return; }
+        const lean = state.threads.find((x) => x.id === id);
+        if (!lean) { goList(); return; }
+        // Resolved threads arrive without their body/messages (lean payload).
+        // Serve the cached full copy if we have a current one, else fetch it.
+        const t = lean.truncated ? (fullThreads[id] && fullThreads[id].updatedAt === lean.updatedAt ? fullThreads[id] : (loadFullThread(id, lean.updatedAt), lean)) : lean;
         main.classList.add('detail');
         const open = navListFor(id); // walk within the current thread's lane (open sweep / deferred / resolved)
         const idx = open.findIndex((x) => x.id === id);
@@ -559,6 +564,12 @@
         }
         if (t.body) inner.appendChild(chatBubble('agent', mdToHtml(t.body)));
         for (const m of t.messages) inner.appendChild(bubbleEl(m));
+        // content still on its way (resolved thread, lazily loaded)
+        if (t.truncated) {
+          const n = document.createElement('div'); n.className = 'reopen-note';
+          n.textContent = `Loading ${t.messageCount || ''} message${t.messageCount === 1 ? '' : 's'}…`;
+          inner.appendChild(n);
+        }
         const showPending = d.saved && hasContent(d) && !edit[id] && t.status !== 'resolved';
         const editingThis = !!edit[id];
         if (showPending) inner.appendChild(pendingBubble(t, d));
@@ -936,6 +947,27 @@
       }
       function scrollSelIntoView() { const el = document.querySelector('.card.sel'); if (el) el.scrollIntoView({ block: 'nearest' }); }
       function scrollChat(dir) { const s = document.querySelector('.chat-scroll'); if (s) s.scrollBy({ top: dir * Math.round(s.clientHeight * 0.5), behavior: 'smooth' }); }
+
+      // Fetch the full content of a thread that came through truncated, then
+      // re-render if the user is still looking at it.
+      async function loadFullThread(id, version) {
+        if (loadingFull[id]) return;
+        loadingFull[id] = true;
+        try {
+          const res = await fetch(API + '/thread/' + id);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const j = await res.json();
+          if (j.thread) {
+            fullThreads[id] = j.thread;
+            const r = route();
+            if (r.name === 'detail' && r.id === id) { keepScroll = false; render(); }
+          }
+        } catch (e) {
+          toast('Could not load this thread: ' + e.message, true);
+        } finally {
+          loadingFull[id] = false;
+        }
+      }
 
       // un-park a deferred thread immediately (server write, not staged)
       async function undefer(id) {

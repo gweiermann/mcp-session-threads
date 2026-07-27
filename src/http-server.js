@@ -65,7 +65,8 @@ export function createServer(store, hub, config) {
     return s;
   };
   store.on('change', (board) => {
-    const frame = `data: ${JSON.stringify({ type: 'state', state: publicView(board) })}\n\n`;
+    // lean: resolved threads travel without their body/messages (fetched on demand)
+    const frame = `data: ${JSON.stringify({ type: 'state', state: publicView(board, { lean: true }) })}\n\n`;
     for (const res of clientsFor(board.id)) {
       try {
         res.write(frame);
@@ -112,6 +113,13 @@ export function createServer(store, hub, config) {
         return sendText(res, 200, 'text/html; charset=utf-8', readFileSync(join(PUBLIC_DIR, 'index.html')));
       }
 
+      // a single full thread (lazy-load for threads truncated in the lean state)
+      const one = p.match(/^\/api\/b\/([\w-]+)\/thread\/([\w-]+)$/);
+      if (GET && one) {
+        if (!store.get(one[1])) return sendJson(res, 404, { error: 'no such board' });
+        return sendJson(res, 200, { thread: store.getThread(one[1], one[2]) });
+      }
+
       // per-board API
       const m = p.match(/^\/api\/b\/([\w-]+)(?:\/([\w-]+))?$/);
       if (m) {
@@ -119,7 +127,8 @@ export function createServer(store, hub, config) {
         const sub = m[2] || '';
         if (!store.get(id)) return sendJson(res, 404, { error: 'no such board' });
 
-        if (GET && sub === 'state') return sendJson(res, 200, publicView(store.get(id)));
+        // ?full=1 returns resolved-thread content too (default is lean)
+        if (GET && sub === 'state') return sendJson(res, 200, publicView(store.get(id), { lean: url.searchParams.get('full') !== '1' }));
         if (GET && sub === 'export') return sendJson(res, 200, store.exportBoard(id));
         if (GET && sub === 'notes') return sendJson(res, 200, { notes: store.allNotes(id) });
         if (GET && sub === 'threads') {
@@ -133,7 +142,7 @@ export function createServer(store, hub, config) {
         if (GET && sub === 'events') {
           res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
           res.write('retry: 2000\n\n');
-          res.write(`data: ${JSON.stringify({ type: 'state', state: publicView(store.get(id)) })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'state', state: publicView(store.get(id), { lean: true }) })}\n\n`);
           clientsFor(id).add(res);
           const hb = setInterval(() => {
             try {

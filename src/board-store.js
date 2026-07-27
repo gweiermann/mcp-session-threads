@@ -59,9 +59,31 @@ function normalizeBoard(raw = {}) {
   };
 }
 
-/** Public view of a board (what the web UI / API consumers receive). */
-export function publicView(b) {
-  return { id: b.id, key: b.key, label: b.label, summary: b.summary, version: b.version, threads: b.threads, agent: b.agent };
+/**
+ * Resolved threads are history: the list only needs their title/status, not
+ * their (often huge) body + message log. Strip that content and flag the thread
+ * as `truncated` so the UI can fetch the full thread on demand.
+ */
+function leanThread(t) {
+  if (t.status !== 'resolved') return t;
+  return { ...t, body: '', messages: [], messageCount: t.messages.length, truncated: true };
+}
+
+/**
+ * Public view of a board (what the web UI / API consumers receive).
+ * `lean` drops resolved-thread content — this is what the live UI + SSE use, so
+ * a board with hundreds of resolved threads stays cheap to push and render.
+ */
+export function publicView(b, { lean = false } = {}) {
+  return {
+    id: b.id,
+    key: b.key,
+    label: b.label,
+    summary: b.summary,
+    version: b.version,
+    threads: lean ? b.threads.map(leanThread) : b.threads,
+    agent: b.agent,
+  };
 }
 
 export class BoardStore extends EventEmitter {
@@ -140,6 +162,11 @@ export class BoardStore extends EventEmitter {
 
   get(id) {
     return this.boards.get(id) || null;
+  }
+
+  /** One full thread (with body + messages) — used to lazy-load truncated ones. */
+  getThread(id, threadId) {
+    return this.#thread(this.#require(id), threadId);
   }
 
   list() {

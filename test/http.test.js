@@ -52,6 +52,38 @@ test('thread create + state + threads list', async () => {
   await s.close();
 });
 
+test('state is lean: resolved threads ship without content and load on demand', async () => {
+  const s = await startServer();
+  const { id } = await jpost(`${s.base}/api/boards`, { key: '/lean' });
+  const open = await jpost(`${s.base}/api/b/${id}/thread`, { title: 'Still open', body: 'OPEN-BODY' });
+  const done = await jpost(`${s.base}/api/b/${id}/thread`, { title: 'History', body: 'RESOLVED-BODY' });
+  await jpost(`${s.base}/api/b/${id}/message`, { thread_id: done.id, text: 'RESOLVED-MESSAGE' });
+  await jpost(`${s.base}/api/b/${id}/resolve`, { thread_id: done.id });
+
+  const lean = await jget(`${s.base}/api/b/${id}/state`);
+  const leanDone = lean.threads.find((t) => t.id === done.id);
+  const leanOpen = lean.threads.find((t) => t.id === open.id);
+  assert.equal(leanDone.truncated, true, 'resolved thread is flagged truncated');
+  assert.deepEqual(leanDone.messages, [], 'its messages are stripped');
+  assert.equal(leanDone.body, '', 'its body is stripped');
+  assert.equal(leanDone.messageCount, 1, 'but the count is kept for the UI');
+  assert.equal(leanDone.title, 'History', 'title survives (the list needs it)');
+  assert.equal(leanOpen.body, 'OPEN-BODY', 'OPEN threads keep their content');
+  assert.ok(!JSON.stringify(lean).includes('RESOLVED-MESSAGE'), 'resolved content is absent from the live payload');
+
+  // the full thread is fetchable on demand
+  const one = await jget(`${s.base}/api/b/${id}/thread/${done.id}`);
+  assert.equal(one.thread.body, 'RESOLVED-BODY');
+  assert.equal(one.thread.messages[0].text, 'RESOLVED-MESSAGE');
+  // ...and ?full=1 still returns everything (export/debug path)
+  const full = await jget(`${s.base}/api/b/${id}/state?full=1`);
+  assert.ok(JSON.stringify(full).includes('RESOLVED-MESSAGE'), 'full=1 includes resolved content');
+  // export must never be lean — it is the backup path
+  const exp = await jget(`${s.base}/api/b/${id}/export`);
+  assert.ok(JSON.stringify(exp).includes('RESOLVED-MESSAGE'), 'export keeps full history');
+  await s.close();
+});
+
 test('submit -> wait delivers reply + notes; unknown board 404s', async () => {
   const s = await startServer();
   const { id } = await jpost(`${s.base}/api/boards`, { key: '/k' });
