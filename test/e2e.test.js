@@ -194,6 +194,49 @@ test('an agent "status" message keeps the thread in the agent-court checklist; a
   assert.ok(!checklist.includes(answered), 'a thread the agent already replied to (user\'s court) is NOT on the checklist');
 });
 
+test('prioritize_threads reorders the review list (most-important first); create_thread priority applies', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const P = makeClient('P', '/proj/prio');
+  t.after(async () => { await P.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await P.client.connect(P.transport);
+  const id = boardId(await urlOf(P.client));
+  const mk = async (title, priority) => textOf(await P.client.callTool({ name: 'create_thread', arguments: priority == null ? { title } : { title, priority } })).match(/thread (\w+)/)[1];
+  const a = await mk('A');
+  const b = await mk('B');
+  const c = await mk('C', 5); // created already-important
+
+  const prio = async () => { const s = await (await fetch(`${BASE}/api/b/${id}/state`)).json(); return Object.fromEntries(s.threads.map((x) => [x.id, x.priority])); };
+  let p = await prio();
+  assert.equal(p[c], 5, 'create_thread priority is stored');
+  assert.equal(p[a], 0, 'default priority is 0');
+
+  // reorder: B first, then A -> B highest
+  await P.client.callTool({ name: 'prioritize_threads', arguments: { thread_ids: [b, a] } });
+  p = await prio();
+  assert.ok(p[b] > p[a] && p[a] > 0, 'listed order sets descending priority (B > A > 0)');
+  assert.equal(p[c], 5, 'unlisted thread keeps its priority');
+});
+
+test('create_thread insert_after places the new thread right after the anchor (not at the top by freshness)', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const I = makeClient('I', '/proj/insert');
+  t.after(async () => { await I.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await I.client.connect(I.transport);
+  const id = boardId(await urlOf(I.client));
+  const mk = async (title, extra) => textOf(await I.client.callTool({ name: 'create_thread', arguments: { title, ...(extra || {}) } })).match(/thread (\w+)/)[1];
+  const anchor = await mk('Anchor');
+  await mk('Newer top'); // created after the anchor -> would sort ABOVE it by freshness
+  const split = await mk('Split piece', { insert_after: anchor });
+
+  // sort the open threads the way the UI does: priority desc, then freshness desc
+  const s = await (await fetch(`${BASE}/api/b/${id}/state`)).json();
+  const ts = (x) => x.updatedAt || x.createdAt;
+  const order = s.threads.slice().sort((a, b) => (b.priority - a.priority) || (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : 0)).map((x) => x.id);
+  assert.equal(order[order.indexOf(anchor) + 1], split, 'the split thread sorts immediately after its anchor');
+});
+
 test('wait_for_feedback survives a daemon restart mid-wait (recovers without a manual retry)', async (t) => {
   killPort();
   rmSync(DATA, { recursive: true, force: true });

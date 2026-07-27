@@ -23,7 +23,7 @@ function inline(t) {
     // Otherwise it's a file path (relative or absolute, optionally :line[:col]).
     // The UI turns clicks on these into "open in editor / copy path" — the path
     // lives in data-file (escaped) so it is never an executable href.
-    return `<a href="#" class="file-link" title="Open in VS Code · copies the path" data-file="${url.replace(/"/g, '&quot;')}">${txt}</a>`;
+    return `<a href="#" class="file-link" title="Open in VS Code" data-file="${url.replace(/"/g, '&quot;')}">${txt}</a>`;
   });
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   t = t.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');

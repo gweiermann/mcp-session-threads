@@ -254,6 +254,7 @@
       <span class="agent-activity" id="agentActivity"></span>
       <span class="spacer"></span>
       <span class="counts" id="counts"></span>
+      <button class="iconbtn" id="fileRootBtn" title="Directory that file links open under">📁</button>
       <button class="iconbtn" id="soundBtn" title="Sound when the agent needs you or finishes">🔕</button>
     </header>
     <div class="progressbar" id="progressbar"><div class="pb-replied" id="pbReplied"></div><div class="pb-done" id="pbDone"></div></div>
@@ -328,11 +329,13 @@
       // ONLY when you respond (stage a reply or submit) — viewing never clears it.
       // Derived from persisted state (drafts + server messages), so it survives reloads.
       const isUnread = (t) => needsAttention(t);
+      // agent-set priority wins (higher first); freshness breaks ties.
+      const byPriority = (a, b) => ((b.priority || 0) - (a.priority || 0)) || byFreshest(a, b);
       // Open, non-deferred threads grouped so keyboard order == visual order: attention first.
       const openThreads = () => {
         const open = state.threads.filter((t) => t.status !== 'resolved' && !isDeferred(t));
-        const attn = open.filter(needsAttention).sort(byFreshest);
-        const waiting = open.filter((t) => !needsAttention(t)).sort(byFreshest);
+        const attn = open.filter(needsAttention).sort(byPriority);
+        const waiting = open.filter((t) => !needsAttention(t)).sort(byPriority);
         return attn.concat(waiting);
       };
 
@@ -702,6 +705,7 @@
         $('counts').textContent = parts.join(' · ') || 'no threads';
 
         $('agentActivity').textContent = working ? '⚙ ' + (state.agent.activity || 'Working…') : (status === 'waiting' ? '🔔 waiting for your feedback' : '');
+        if (typeof syncFileRootBtn === 'function') syncFileRootBtn(); // keep the 📁 title showing the effective base once state.key is known
 
         const allMine = mineTotal > 0 && mineReplied === mineTotal;
         if (working) document.title = `⚙ ${agentDone}/${open.length} agent — Session Threads`;
@@ -789,18 +793,32 @@
         if (!firstLoad) {
           if (next.threads.length > prevCount) toast('Agent posted a new thread');
           const nowAgent = (next.agent && next.agent.status) || 'idle';
-          // agent left "waiting" after we submitted -> it just synced our feedback
+          // Only TWO sounds: (1) the agent received your feedback, (2) it finished
+          // the whole round. Entering "waiting" happens on every wait cycle, so it
+          // is visual-only (no beep) to avoid a ping on every agent reply.
           if (prevAgent === 'waiting' && nowAgent !== 'waiting' && pendingSync) { pendingSync = false; toast('Agent received your feedback ✓'); beepConfirm(); }
-          else if (nowAgent === 'waiting' && prevAgent !== 'waiting') { toast('Agent is ready — your turn to reply'); beep(); }
-          else if (nowAgent === 'done' && prevAgent !== 'done') { toast('Agent finished ✓'); beep(); }
+          else if (nowAgent === 'waiting' && prevAgent !== 'waiting') { toast('Agent is ready — your turn to reply'); /* visual only, no sound */ }
+          else if (nowAgent === 'done' && prevAgent !== 'done') { toast('Agent finished the round ✓'); beep(); }
         }
         firstLoad = false;
+      }
+
+      // ---- file-link base (per-board override; default = board key) ----
+      // Lets you point a board's relative file links at whichever checkout you
+      // are actually editing (e.g. this board is keyed to shopware-2nd but you
+      // are working in a different clone). Stored in the browser, per board.
+      const FILEROOT_KEY = 'st-fileroot-' + BOARD;
+      let fileRoot = localStorage.getItem(FILEROOT_KEY) || '';
+      function syncFileRootBtn() {
+        const eff = fileRoot || (state && state.key) || '(unknown)';
+        $('fileRootBtn').textContent = fileRoot ? '📂' : '📁';
+        $('fileRootBtn').title = 'File links open under: ' + eff + (fileRoot ? '  (overridden — click to change)' : '  (board default — click to override)');
       }
 
       // ---- sound (per-board toggle, default off) ----
       const SND_KEY = 'rt-sound-' + BOARD;
       let soundOn = localStorage.getItem(SND_KEY) === '1';
-      function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — confirms when your feedback syncs and pings when it is your turn' : 'Sound off — click to enable the sync-confirm / your-turn pings'; }
+      function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — plays only when the agent receives your feedback and when it finishes the round' : 'Sound off — click to enable the two round sounds (feedback received / round finished)'; }
       // play one or more sine blips; each note is [frequency, startOffsetSec, durationSec]
       function playTones(notes) {
         if (!soundOn) return;
@@ -829,27 +847,25 @@
       async function refresh() { try { const r = await fetch(API + '/state'); applyState(await r.json()); } catch {} }
 
       // ---- file links (markdown [text](path[:line[:col]])) ----
-      // Fire the OS editor via the vscode:// scheme AND copy the resolved path to
-      // the clipboard as a fallback. Relative paths resolve against the board key
-      // (the project working directory).
+      // Open the file in the editor via the vscode:// scheme. Relative paths
+      // resolve against the file base (board key by default, overridable via 📁).
       function openExternal(url) {
         const f = document.createElement('iframe'); f.style.display = 'none'; f.src = url;
         document.body.appendChild(f); setTimeout(() => { try { f.remove(); } catch {} }, 1500);
       }
+      function fileBase() { return (fileRoot || (state && state.key) || '').replace(/\/+$/, ''); }
       function handleFileLink(raw) {
         let file = raw, line = '', col = '';
         const mm = raw.match(/^(.*?):(\d+)(?::(\d+))?$/); // split path:line[:col]
         if (mm) { file = mm[1]; line = mm[2]; col = mm[3] || ''; }
-        const key = state && state.key ? state.key.replace(/\/+$/, '') : '';
+        const key = fileBase(); // board key by default; overridable per board (see 📁)
         let abs = file;
         if (!file.startsWith('/')) abs = key ? key + '/' + file.replace(/^\.?\//, '') : '';
-        const clip = (abs || file) + (line ? ':' + line : '');
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(clip).catch(() => {});
         if (abs) {
           openExternal('vscode://file' + abs + (line ? ':' + line + (col ? ':' + col : '') : ''));
-          toast('Opening ' + file + ' in VS Code · path copied');
+          toast('Opening ' + file + ' in VS Code');
         } else {
-          toast('Copied path: ' + clip); // no board key -> cannot resolve absolute path for the editor
+          toast('No base directory set — click 📁 to choose where file links open', true);
         }
       }
 
@@ -919,9 +935,19 @@
       $('submitBtn').onclick = submit;
       syncSoundBtn();
       $('soundBtn').onclick = () => { soundOn = !soundOn; localStorage.setItem(SND_KEY, soundOn ? '1' : '0'); syncSoundBtn(); if (soundOn) beep(); };
+      syncFileRootBtn();
+      $('fileRootBtn').onclick = () => {
+        const cur = fileRoot || (state && state.key) || '';
+        const v = prompt('Open file links under this directory (absolute path). Leave blank to use the board default:', cur);
+        if (v === null) return;
+        fileRoot = v.trim().replace(/\/+$/, '');
+        localStorage.setItem(FILEROOT_KEY, fileRoot);
+        syncFileRootBtn();
+        toast('File links now open under: ' + (fileRoot || (state && state.key) || '(board default)'));
+      };
       window.addEventListener('hashchange', render);
       document.addEventListener('keydown', onKey);
-      // markdown file links: intercept and open in the editor / copy the path
+      // markdown file links: intercept and open in the editor (VS Code)
       document.addEventListener('click', (e) => {
         const a = e.target.closest && e.target.closest('a.file-link');
         if (!a) return;

@@ -5,12 +5,15 @@ import { z } from 'zod';
 export const INSTRUCTIONS = [
   'A shared review board with a human-facing web UI. Each project gets its OWN persistent board (never reuse another). USE IT for review- or discussion-heavy turns — code reviews, design decisions, planning — anytime you would otherwise cram 2+ findings/questions/decisions into one terminal message.',
   'ALWAYS give the user the board URL up front (get_board_url, also returned by create_thread). It is STABLE for this project and does not change across restarts.',
-  'THE BOARD IS THE ONLY THING THE USER SEES for this exchange — not your terminal. Put a set_summary TL;DR on top, make each thread self-contained, and when you reply in a thread START with a one-line summary of what the user asked so they know what you are responding to.',
+  'PROACTIVELY open the board in the user\'s browser/preview pane so they can watch it live — do this once, right after you create the first thread. In Claude Code: call preview_start with the daemon ORIGIN (e.g. http://127.0.0.1:<port>), then navigate to the full board URL from get_board_url (opening the localhost path directly is blocked, so the origin-then-navigate order matters).',
+  'THE BOARD IS THE ONLY THING THE USER SEES for this exchange — not your terminal. Make each thread self-contained, and when you reply in a thread START with a one-line summary of what the user asked so they know what you are responding to.',
+  'Keep set_summary VERY SHORT — a couple of lines of big-picture orientation, NOT a recap. Do not restate what threads already say. Assume the summary may go UNREAD: anything the user must act on belongs in a THREAD, never only in the summary. Good uses: the one-line overall status/goal, something not captured in any thread, or shifting attention (e.g. "you probably haven\'t seen my reply in thread abc123 — please look").',
   'Typical flow: create_thread per finding/question (freestyle `tags` like ["finding","high"] and a few tailored `actions` like ["Fix","Approve"]), set_summary, then call wait_for_feedback ONCE — it blocks a long time and returns the moment the user submits; only call again if it returns a "no feedback yet" notice.',
   'wait_for_feedback also returns a checklist of every thread awaiting YOUR response (the user replied, ball in your court). Address EACH one before waiting again: reply with add_message, or if no reply is warranted mark_thread_done / resolve_thread / defer_thread. A thread stays on that checklist until you do one of those — do not leave any unaddressed unless it is deferred or done.',
   'When you acknowledge a request but are NOT done yet (e.g. "on it — here is the plan"), post that with add_message intent:"status" so the board keeps the thread as "waiting on agent" and does not falsely prompt the user to reply. Post a normal message (or intent:"done") once the work is actually finished.',
   'The board tracks WHOSE TURN it is so the UI can show the right progress bar and ping the user. Share progress as you act: start_working when you begin, work_on_thread(id) before a specific thread (it is highlighted), mark_thread_done(id) when finished, finish_working at the end. wait_for_feedback automatically flips the board to "your turn" (plays the user a sound) while it blocks, then back when they submit — you do not manage that state yourself.',
   'Do NOT auto-resolve threads for heavy/uncertain changes — leave them open for the user to confirm; only resolve small, clear-cut items.',
+  'Order the review for the user: pass the most important threads first to prioritize_threads (or set `priority` on create_thread) so the highest-impact items sit at the top of "Needs your attention" and get answered first.',
   'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore; when the moment is right, resume_thread un-parks it AND posts a message telling the user why to pick it up now.',
   'If threads end up on the wrong board you can self-serve: list_boards, use_board, import_threads, export_board, backup_board. Tool calls throw loudly on failure — never assume a write landed if the call errored.',
 ].join(' ');
@@ -60,8 +63,8 @@ export function registerTools(mcp, client) {
 
   mcp.tool(
     'create_thread',
-    'Open a thread on this project\'s board (one per finding/question/note). `body` supports Markdown (incl. tables). `tags` are freestyle marker badges. `actions` are tailored quick-reply buttons (default ["Fix","Approve"]).',
-    { title: S, body: S.optional(), tags: A, actions: A },
+    'Open a thread on this project\'s board (one per finding/question/note). `body` supports Markdown (incl. tables). `tags` are freestyle marker badges. `actions` are tailored quick-reply buttons (default ["Fix","Approve"]). `priority` (higher = more important, default 0) sorts it toward the top of the review list. `insert_after` (a thread id) places this new thread immediately after that thread in the list — use it for flow, e.g. when you split one thread into several so the pieces appear right below the original (chain: insert each after the previous one).',
+    { title: S, body: S.optional(), tags: A, actions: A, priority: z.number().optional(), insert_after: S.optional() },
     async (a) => {
       const j = await client.call('/thread', { method: 'POST', body: a });
       const first = (await client.call('/threads')).threads.length === 1;
@@ -115,10 +118,20 @@ export function registerTools(mcp, client) {
     return ok(JSON.stringify({ url: client.getBoardUrl(), count: threads.length, threads }, null, 2));
   });
 
-  mcp.tool('set_summary', 'Pin an overall TL;DR (Markdown) at the top of the board. Empty string clears it.', { text: S }, async ({ text }) => {
+  mcp.tool('set_summary', 'Pin a VERY SHORT big-picture note at the top of the board (Markdown; empty string clears). A couple of lines max — NOT a recap and NOT a restatement of thread contents. Assume it may go unread: never put anything the user must act on only here (that goes in a thread). Best uses: the one-line overall status/goal, something not captured in any thread, or redirecting attention (e.g. "you probably haven\'t seen my reply in thread abc123 — please look").', { text: S }, async ({ text }) => {
     await client.call('/summary', { method: 'POST', body: { text } });
     return ok(text ? 'Summary updated.' : 'Summary cleared.');
   });
+
+  mcp.tool(
+    'prioritize_threads',
+    'Reorder the review list so the user answers the most important threads first. Pass `thread_ids` MOST-IMPORTANT FIRST — they float to the top of "Needs your attention" in that exact order; unlisted threads stay below (newest-first). Pass the full desired order in one call; call again to change it.',
+    { thread_ids: z.array(z.string()) },
+    async ({ thread_ids }) => {
+      const j = await client.call('/prioritize', { method: 'POST', body: { thread_ids } });
+      return ok(`Prioritized ${j.set}/${j.total} thread(s) — first listed is now top of the list.`);
+    }
+  );
 
   mcp.tool('get_board_url', "Return this project's stable board URL. Share it with the user.", {}, async () => ok(client.getBoardUrl() || '(board not ready)'));
 

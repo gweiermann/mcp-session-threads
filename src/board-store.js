@@ -23,6 +23,8 @@ export function makeThread(raw = {}) {
     status: raw.status === 'resolved' ? 'resolved' : 'open',
     // agent-controlled "parked" flag: parks the thread in a Deferred lane until resumed
     deferred: raw.deferred === true,
+    // agent-controlled priority; higher sorts first in the review list (0 = default)
+    priority: Number.isFinite(raw.priority) ? raw.priority : 0,
     work: raw.work === 'working' || raw.work === 'done' ? raw.work : null,
     createdBy: raw.createdBy === 'user' ? 'user' : 'agent',
     actions: Array.isArray(raw.actions) ? raw.actions.map(String) : [...DEFAULT_ACTIONS],
@@ -153,12 +155,42 @@ export class BoardStore extends EventEmitter {
   }
 
   // ---- thread mutations ----
-  addThread(id, { title, body, tags, actions } = {}) {
+  addThread(id, { title, body, tags, actions, priority, insert_after } = {}) {
     const b = this.#require(id);
-    const t = makeThread({ title, body, tags, actions: Array.isArray(actions) ? actions : undefined });
+    const t = makeThread({ title, body, tags, actions: Array.isArray(actions) ? actions : undefined, priority });
+    if (insert_after) {
+      const anchor = b.threads.find((x) => x.id === insert_after);
+      if (anchor) {
+        // Position the new thread immediately AFTER the anchor: put it in the
+        // anchor's priority tier and give it a sort timestamp 1ms older, so with
+        // the (priority desc, freshness desc) sort it lands right below the anchor.
+        t.priority = anchor.priority;
+        const after = new Date(new Date(anchor.updatedAt || anchor.createdAt).getTime() - 1).toISOString();
+        t.createdAt = after;
+        t.updatedAt = after;
+      }
+    }
     b.threads.push(t);
     this.#touch(b);
     return t;
+  }
+
+  /**
+   * Reorder the review list by priority. `threadIds` is MOST-IMPORTANT FIRST;
+   * the first gets the highest priority so it sorts to the top. Threads not
+   * listed keep their current priority (default 0, i.e. below the prioritized).
+   * Does not touch updatedAt, so it never reorders by freshness or marks unread.
+   */
+  reorderByPriority(id, threadIds = []) {
+    const b = this.#require(id);
+    const ids = Array.isArray(threadIds) ? threadIds : [];
+    let set = 0;
+    ids.forEach((tid, i) => {
+      const t = b.threads.find((x) => x.id === tid);
+      if (t) { t.priority = ids.length - i; set += 1; }
+    });
+    this.#touch(b);
+    return { set, total: ids.length };
   }
 
   addMessage(id, threadId, { text, author = 'agent', actions, tags, intent } = {}) {
