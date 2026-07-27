@@ -29,7 +29,7 @@ export function makeThread(raw = {}) {
     messages: Array.isArray(raw.messages)
       ? raw.messages
           .filter((m) => m && typeof m.text === 'string')
-          .map((m) => ({ author: m.author === 'user' ? 'user' : 'agent', text: m.text, ts: m.ts || now() }))
+          .map((m) => ({ author: m.author === 'user' ? 'user' : 'agent', text: m.text, ts: m.ts || now(), ...(m.intent ? { intent: String(m.intent) } : {}) }))
       : [],
     createdAt: raw.createdAt || now(),
     updatedAt: raw.updatedAt || now(),
@@ -161,10 +161,12 @@ export class BoardStore extends EventEmitter {
     return t;
   }
 
-  addMessage(id, threadId, { text, author = 'agent', actions, tags } = {}) {
+  addMessage(id, threadId, { text, author = 'agent', actions, tags, intent } = {}) {
     const b = this.#require(id);
     const t = this.#thread(b, threadId);
-    t.messages.push({ author: author === 'user' ? 'user' : 'agent', text: String(text || ''), ts: now() });
+    const msg = { author: author === 'user' ? 'user' : 'agent', text: String(text || ''), ts: now() };
+    if (intent) msg.intent = String(intent); // UI/turn hint: "status" keeps the thread as waiting-on-agent
+    t.messages.push(msg);
     if (Array.isArray(actions)) t.actions = actions.map(String);
     if (Array.isArray(tags)) t.tags = cleanTags(tags);
     if (t.status === 'resolved') t.status = 'open'; // adding a message reopens

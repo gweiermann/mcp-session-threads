@@ -166,6 +166,34 @@ test('wait_for_feedback reminds the agent of every thread awaiting its response 
   assert.ok(!checklist.includes(defer), 'a deferred thread is NOT in the checklist');
 });
 
+test('an agent "status" message keeps the thread in the agent-court checklist; a plain reply does not', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const H = makeClient('H', '/proj/intent');
+  t.after(async () => { await H.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await H.client.connect(H.transport);
+  const id = boardId(await urlOf(H.client));
+  const mk = async (title) => textOf(await H.client.callTool({ name: 'create_thread', arguments: { title } })).match(/thread (\w+)/)[1];
+  const working = await mk('Working thread');
+  const answered = await mk('Answered thread'); // agent gave a real reply -> user's court, not reminded
+  const userReplied = await mk('User replied thread');
+
+  await H.client.callTool({ name: 'add_message', arguments: { thread_id: working, text: 'On it — here is the plan…', intent: 'status' } });
+  await H.client.callTool({ name: 'add_message', arguments: { thread_id: answered, text: 'Here is the answer.' } });
+
+  // verify intent persisted on the message
+  const st = await (await fetch(`${BASE}/api/b/${id}/state`)).json();
+  const wt = st.threads.find((x) => x.id === working);
+  assert.equal(wt.messages[wt.messages.length - 1].intent, 'status', 'status intent persisted on the message');
+
+  await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: userReplied, action: 'ping' }], notes: '' }) });
+  const out = textOf(await H.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
+  const checklist = out.split('awaiting YOUR response')[1] || '';
+  assert.ok(checklist.includes(working), 'a status (still-working) thread stays on the agent checklist');
+  assert.ok(checklist.includes(userReplied), 'a thread the user replied to is on the checklist');
+  assert.ok(!checklist.includes(answered), 'a thread the agent already replied to (user\'s court) is NOT on the checklist');
+});
+
 test('wait_for_feedback survives a daemon restart mid-wait (recovers without a manual retry)', async (t) => {
   killPort();
   rmSync(DATA, { recursive: true, force: true });

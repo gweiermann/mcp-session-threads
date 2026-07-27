@@ -186,6 +186,11 @@
       .bubble.agent { align-self: flex-start; background: var(--panel-2); border-bottom-left-radius: 5px; }
       .bubble.user { align-self: flex-end; background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); border-bottom-right-radius: 5px; }
       .bubble.user .who { color: var(--green); }
+      /* intent hints: a "status" (still-working) message reads as an inline note, not a prompt */
+      .bubble.agent.msg-status { background: transparent; border-style: dashed; color: var(--muted); }
+      .bubble.agent.msg-status .who { color: var(--amber); }
+      .bubble.agent.msg-done .who { color: var(--green); }
+      .bubble.agent.msg-proposal .who { color: var(--accent); }
 
       /* ---- reply controls ---- */
       .reply { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
@@ -218,6 +223,8 @@
       .md li { margin: 2px 0; }
       .md a { color: var(--accent); text-decoration: none; }
       .md a:hover { text-decoration: underline; }
+      .md a.file-link { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border)); cursor: pointer; }
+      .md a.file-link::before { content: '↗ '; opacity: 0.6; font-family: inherit; }
       .md blockquote { border-left: 3px solid var(--border); margin: 6px 0; padding: 2px 10px; color: var(--muted); }
       .md hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
       .md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; background: color-mix(in srgb, var(--muted) 16%, transparent); border: 1px solid var(--border); border-radius: 5px; padding: 0.5px 4px; }
@@ -304,11 +311,15 @@
       // ---- whose turn is it? ----
       // A reply you staged locally but have NOT submitted yet.
       const isStaged = (t) => { const d = drafts[t.id]; return !!(d && d.saved && hasContent(d)); };
-      const lastAuthor = (t) => (t.messages && t.messages.length ? t.messages[t.messages.length - 1].author : null);
+      const lastMsg = (t) => (t.messages && t.messages.length ? t.messages[t.messages.length - 1] : null);
+      const lastAuthor = (t) => { const m = lastMsg(t); return m ? m.author : null; };
+      // The agent's last message is a "status" update -> it is still working.
+      const agentWorkingLast = (t) => { const m = lastMsg(t); return !!(m && m.author === 'agent' && m.intent === 'status'); };
       // Agent parked it: shown in the Deferred lane, ignored by the review flow until resumed.
       const isDeferred = (t) => t.deferred === true && t.status !== 'resolved';
-      // Your last submitted message is the latest -> ball is in the AGENT's court.
-      const awaitingAgent = (t) => t.status !== 'resolved' && lastAuthor(t) === 'user';
+      // Ball in the AGENT's court: you replied last, OR the agent posted a status
+      // update (still working) — in both cases you should wait, not reply.
+      const awaitingAgent = (t) => t.status !== 'resolved' && (lastAuthor(t) === 'user' || agentWorkingLast(t));
       // You've handled it (staged OR already submitted) -> not on your plate.
       const isAnswered = (t) => t.status !== 'resolved' && (awaitingAgent(t) || isStaged(t));
       // Truly needs you: open, not deferred, agent spoke last (or fresh), no staged reply.
@@ -365,10 +376,22 @@
       function renderTags(host, t) {
         for (const tag of tagsFor(t)) { const b = document.createElement('span'); b.className = 'badge ' + tagClass(tag); b.textContent = tag; host.appendChild(b); }
       }
+      // intent -> subtle rendering hint (a caption on the bubble, not a tag badge)
+      const INTENT_META = {
+        status: { label: '⏳ working', cls: 'msg-status' },
+        proposal: { label: 'proposal', cls: 'msg-proposal' },
+        question: { label: 'question', cls: 'msg-proposal' },
+        discussion: { label: 'needs discussion', cls: 'msg-proposal' },
+        done: { label: '✓ done', cls: 'msg-done' },
+      };
       function bubbleEl(m) {
         const b = document.createElement('div');
         b.className = 'bubble ' + (m.author === 'user' ? 'user' : 'agent');
-        const who = document.createElement('span'); who.className = 'who'; who.textContent = m.author === 'user' ? 'you' : 'agent';
+        const meta = m.author === 'agent' && m.intent ? INTENT_META[m.intent] : null;
+        if (meta) b.classList.add(meta.cls);
+        else if (m.author === 'agent' && m.intent) b.classList.add('msg-proposal'); // unknown intent -> generic caption style
+        const who = document.createElement('span'); who.className = 'who';
+        who.textContent = m.author === 'user' ? 'you' : (m.intent ? 'agent · ' + (meta ? meta.label : m.intent) : 'agent');
         const tx = document.createElement('div'); tx.className = 'txt md'; tx.innerHTML = mdToHtml(m.text);
         b.append(who, tx); return b;
       }
@@ -402,7 +425,7 @@
         if (resolved) head.appendChild(chip('resolved', 'resolved'));
         else if (deferred) head.appendChild(chip('⏸ deferred', 'deferred'));
         else if (staged) head.appendChild(chip('✓ ' + ((drafts[t.id] && drafts[t.id].action) || 'pending'), 'replied'));
-        else if (awaitingAgent(t)) head.appendChild(chip('⏳ waiting on agent', 'waiting-agent'));
+        else if (awaitingAgent(t)) head.appendChild(chip(agentWorkingLast(t) ? '⏳ agent working' : '⏳ waiting on agent', 'waiting-agent'));
 
         const chev = document.createElement('span'); chev.className = 'chev'; chev.textContent = '›'; head.appendChild(chev);
         head.onclick = () => openThread(t.id, true);
@@ -472,7 +495,7 @@
         else if (isDeferred(t)) top.appendChild(chip('⏸ deferred', 'deferred'));
         else if (isUnread(t)) top.appendChild(chip('● unread', 'unread-chip'));
         else if (isStaged(t)) top.appendChild(chip('✓ replied (pending)', 'replied'));
-        else if (awaitingAgent(t)) top.appendChild(chip('⏳ waiting on agent', 'waiting-agent'));
+        else if (awaitingAgent(t)) top.appendChild(chip(agentWorkingLast(t) ? '⏳ agent working' : '⏳ waiting on agent', 'waiting-agent'));
         if (idx >= 0) { const pos = document.createElement('span'); pos.className = 'pos'; pos.textContent = `${idx + 1}/${open.length}`; top.appendChild(pos); }
         const prevBtn = document.createElement('button'); prevBtn.className = 'btn small'; prevBtn.textContent = '‹'; prevBtn.title = 'Previous (j)'; prevBtn.disabled = idx <= 0; prevBtn.onclick = () => goRel(-1, true); top.appendChild(prevBtn);
         const nextBtn = document.createElement('button'); nextBtn.className = 'btn small'; nextBtn.textContent = '›'; nextBtn.title = 'Next (k)'; nextBtn.disabled = idx < 0 || idx >= open.length - 1; nextBtn.onclick = () => goRel(1, true); top.appendChild(nextBtn);
@@ -805,6 +828,31 @@
       }
       async function refresh() { try { const r = await fetch(API + '/state'); applyState(await r.json()); } catch {} }
 
+      // ---- file links (markdown [text](path[:line[:col]])) ----
+      // Fire the OS editor via the vscode:// scheme AND copy the resolved path to
+      // the clipboard as a fallback. Relative paths resolve against the board key
+      // (the project working directory).
+      function openExternal(url) {
+        const f = document.createElement('iframe'); f.style.display = 'none'; f.src = url;
+        document.body.appendChild(f); setTimeout(() => { try { f.remove(); } catch {} }, 1500);
+      }
+      function handleFileLink(raw) {
+        let file = raw, line = '', col = '';
+        const mm = raw.match(/^(.*?):(\d+)(?::(\d+))?$/); // split path:line[:col]
+        if (mm) { file = mm[1]; line = mm[2]; col = mm[3] || ''; }
+        const key = state && state.key ? state.key.replace(/\/+$/, '') : '';
+        let abs = file;
+        if (!file.startsWith('/')) abs = key ? key + '/' + file.replace(/^\.?\//, '') : '';
+        const clip = (abs || file) + (line ? ':' + line : '');
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(clip).catch(() => {});
+        if (abs) {
+          openExternal('vscode://file' + abs + (line ? ':' + line + (col ? ':' + col : '') : ''));
+          toast('Opening ' + file + ' in VS Code · path copied');
+        } else {
+          toast('Copied path: ' + clip); // no board key -> cannot resolve absolute path for the editor
+        }
+      }
+
       // focus the reply input for the current thread (opening the pending
       // reply for editing if it's collapsed into a bubble)
       function focusComposer(id) {
@@ -873,6 +921,14 @@
       $('soundBtn').onclick = () => { soundOn = !soundOn; localStorage.setItem(SND_KEY, soundOn ? '1' : '0'); syncSoundBtn(); if (soundOn) beep(); };
       window.addEventListener('hashchange', render);
       document.addEventListener('keydown', onKey);
+      // markdown file links: intercept and open in the editor / copy the path
+      document.addEventListener('click', (e) => {
+        const a = e.target.closest && e.target.closest('a.file-link');
+        if (!a) return;
+        e.preventDefault();
+        const raw = a.getAttribute('data-file') || '';
+        if (raw) handleFileLink(raw);
+      });
       render();
       refresh();
       connect();

@@ -16,6 +16,20 @@ test('links: only safe hrefs; javascript: is neutralised', () => {
   assert.ok(!html.toLowerCase().includes('javascript:'));
 });
 
+test('file-path links become file-links carrying the path in data-file', () => {
+  const rel = mdToHtml('see [Bar.tsx:42](app/components/Bar.tsx:42)');
+  assert.ok(rel.includes('class="file-link"'), 'relative path -> file-link');
+  assert.ok(rel.includes('data-file="app/components/Bar.tsx:42"'), 'path preserved in data-file');
+  assert.ok(rel.includes('href="#"'), 'href stays inert');
+
+  const abs = mdToHtml('[cfg](/Users/x/proj/config.js)');
+  assert.ok(abs.includes('data-file="/Users/x/proj/config.js"'), 'absolute path preserved');
+
+  // still NOT a file link: real schemes and anchors
+  assert.ok(!mdToHtml('[a](https://x.io)').includes('file-link'), 'http is not a file link');
+  assert.ok(!mdToHtml('[a](javascript:alert(1))').includes('file-link'), 'js scheme is not a file link');
+});
+
 test('inline + fenced code', () => {
   assert.ok(mdToHtml('use `foo` here').includes('<code>foo</code>'));
   const fenced = mdToHtml('```js\nconst a = 1;\n```');

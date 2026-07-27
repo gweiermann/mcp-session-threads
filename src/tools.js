@@ -8,6 +8,7 @@ export const INSTRUCTIONS = [
   'THE BOARD IS THE ONLY THING THE USER SEES for this exchange — not your terminal. Put a set_summary TL;DR on top, make each thread self-contained, and when you reply in a thread START with a one-line summary of what the user asked so they know what you are responding to.',
   'Typical flow: create_thread per finding/question (freestyle `tags` like ["finding","high"] and a few tailored `actions` like ["Fix","Approve"]), set_summary, then call wait_for_feedback ONCE — it blocks a long time and returns the moment the user submits; only call again if it returns a "no feedback yet" notice.',
   'wait_for_feedback also returns a checklist of every thread awaiting YOUR response (the user replied, ball in your court). Address EACH one before waiting again: reply with add_message, or if no reply is warranted mark_thread_done / resolve_thread / defer_thread. A thread stays on that checklist until you do one of those — do not leave any unaddressed unless it is deferred or done.',
+  'When you acknowledge a request but are NOT done yet (e.g. "on it — here is the plan"), post that with add_message intent:"status" so the board keeps the thread as "waiting on agent" and does not falsely prompt the user to reply. Post a normal message (or intent:"done") once the work is actually finished.',
   'The board tracks WHOSE TURN it is so the UI can show the right progress bar and ping the user. Share progress as you act: start_working when you begin, work_on_thread(id) before a specific thread (it is highlighted), mark_thread_done(id) when finished, finish_working at the end. wait_for_feedback automatically flips the board to "your turn" (plays the user a sound) while it blocks, then back when they submit — you do not manage that state yourself.',
   'Do NOT auto-resolve threads for heavy/uncertain changes — leave them open for the user to confirm; only resolve small, clear-cut items.',
   'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore; when the moment is right, resume_thread un-parks it AND posts a message telling the user why to pick it up now.',
@@ -44,7 +45,9 @@ function formatFeedback(p, outstanding = []) {
 async function gatherOutstanding(client) {
   try {
     const { threads } = await client.call('/threads');
-    return threads.filter((t) => t.status === 'open' && !t.deferred && t.work !== 'done' && t.lastAuthor === 'user');
+    // ball in the agent's court = user replied last, OR the agent's last message
+    // was a "status" (still working) — either way the agent owes a follow-up.
+    return threads.filter((t) => t.status === 'open' && !t.deferred && t.work !== 'done' && (t.lastAuthor === 'user' || t.lastIntent === 'status'));
   } catch {
     return [];
   }
@@ -68,11 +71,11 @@ export function registerTools(mcp, client) {
 
   mcp.tool(
     'add_message',
-    'Append an agent message to a thread (Markdown). Start with a one-line summary of what the user asked. Optionally refresh `actions`/`tags`. Adding a message to a resolved thread reopens it.',
-    { thread_id: S, text: S, actions: A, tags: A },
+    'Append an agent message to a thread (Markdown). Start with a one-line summary of what the user asked. Adding a message to a resolved thread reopens it. Optionally set `intent` to hint the UI: "status" = a progress update / plan while you KEEP WORKING — the thread stays "waiting on agent" and does NOT prompt the user to reply (use it for "on it, here is the plan…"); "proposal"/"question"/"discussion" = you want the user\'s input; "done" = you finished. Only "status" changes turn behavior; the others are rendering hints. Optionally refresh `actions`/`tags`.',
+    { thread_id: S, text: S, intent: z.enum(['status', 'proposal', 'question', 'discussion', 'done']).optional(), actions: A, tags: A },
     async (a) => {
       await client.call('/message', { method: 'POST', body: a });
-      return ok(`Added message to ${a.thread_id}.`);
+      return ok(`Added message to ${a.thread_id}${a.intent ? ` [${a.intent}]` : ''}.`);
     }
   );
 

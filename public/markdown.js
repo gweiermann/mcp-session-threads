@@ -12,8 +12,18 @@ export const escapeHtml = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&'
 
 function inline(t) {
   t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => {
-    const safe = /^(https?:|mailto:|\/|#)/i.test(url) ? url : '#';
-    return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
+    if (/^(https?:|mailto:)/i.test(url)) {
+      return `<a href="${url.replace(/"/g, '%22')}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
+    }
+    if (/^#/.test(url)) return `<a href="${url.replace(/"/g, '%22')}">${txt}</a>`;
+    // Any other URL scheme (javascript:, data:, vscode:, tel:, …) is neutralised.
+    // A "scheme" has no "/" or "." before its ":", which keeps file paths like
+    // "src/foo.ts:42" out of this branch.
+    if (/^[a-z][a-z0-9+-]*:/i.test(url)) return `<a href="#">${txt}</a>`;
+    // Otherwise it's a file path (relative or absolute, optionally :line[:col]).
+    // The UI turns clicks on these into "open in editor / copy path" — the path
+    // lives in data-file (escaped) so it is never an executable href.
+    return `<a href="#" class="file-link" title="Open in VS Code · copies the path" data-file="${url.replace(/"/g, '&quot;')}">${txt}</a>`;
   });
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   t = t.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
