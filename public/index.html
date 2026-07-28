@@ -335,11 +335,15 @@
       const agentTs = (f) => (state.agent && state.agent[f]) || '';
       // Your reply hasn't been picked up by the agent yet (it hasn't consumed the batch).
       const notPickedUp = (t) => userRepliedLast(t) && agentTs('consumedAt') < lastMsg(t).ts;
-      // The agent picked your reply up AND then finished a round without answering it.
+      // The agent picked your reply up AND then finished a round without answering
+      // it. The finish must come AFTER the pickup (finishedAt >= consumedAt) —
+      // otherwise a reply sent while the agent was mid-round, then picked up on its
+      // next wait, would be wrongly flagged (the finish predates that pickup).
       const ignoredByAgent = (t) => {
         if (t.status === 'resolved' || isDeferred(t) || !userRepliedLast(t)) return false;
         const r = lastMsg(t).ts;
-        return agentTs('consumedAt') >= r && agentTs('finishedAt') >= r;
+        const consumed = agentTs('consumedAt');
+        return consumed >= r && agentTs('finishedAt') >= consumed;
       };
       // Ball in the AGENT's court: you replied last (and it hasn't finished without
       // answering), OR the agent posted a status update (still working).

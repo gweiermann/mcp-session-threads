@@ -329,7 +329,34 @@ test('a reply the agent finishes without answering is flagged ignored (consumedA
   const th = st.threads.find((x) => x.id === tid);
   const replyTs = th.messages[th.messages.length - 1].ts;
   assert.equal(th.messages[th.messages.length - 1].author, 'user', 'thread still ends on the user reply (agent never answered)');
-  assert.ok(st.agent.consumedAt >= replyTs && st.agent.finishedAt >= replyTs, 'both stamps are past the reply -> UI renders "ignored by agent"');
+  // ignored = picked up (consumedAt >= reply) AND finished AFTER that pickup (finishedAt >= consumedAt)
+  assert.ok(st.agent.consumedAt >= replyTs && st.agent.finishedAt >= st.agent.consumedAt, 'finish came after the pickup -> UI renders "ignored by agent"');
+});
+
+test('a reply sent while the agent is working is NOT flagged ignored after the next pickup', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const W = makeClient('W2', '/proj/notignored');
+  t.after(async () => { await W.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await W.client.connect(W.transport);
+  const id = boardId(await urlOf(W.client));
+  const tid = textOf(await W.client.callTool({ name: 'create_thread', arguments: { title: 'X' } })).match(/thread (\w+)/)[1];
+  const submit = (b) => fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
+
+  // round 1: something is picked up, board goes "working"
+  await submit({ replies: [], notes: 'kick off round 1' });
+  await W.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } });
+  // user replies to X WHILE the agent is working (after that first pickup)
+  await new Promise((r) => setTimeout(r, 10));
+  await submit({ replies: [{ thread_id: tid, text: 'please look at X' }], notes: '' });
+  // agent finishes round 1 and waits again -> that wait PICKS UP X's reply
+  await W.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } });
+
+  const st = await (await fetch(`${BASE}/api/b/${id}/state`)).json();
+  const th = st.threads.find((x) => x.id === tid);
+  const replyTs = th.messages[th.messages.length - 1].ts;
+  assert.ok(st.agent.consumedAt >= replyTs, 'X was picked up on the latest wait');
+  assert.ok(st.agent.finishedAt < st.agent.consumedAt, 'the finish predates this pickup -> NOT ignored (agent is now working on it)');
 });
 
 test('use_board: named boards give the same project separate streams, and the choice survives a restart', async (t) => {
