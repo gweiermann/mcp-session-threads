@@ -110,6 +110,22 @@ test('setAgent tracks overall status + per-thread work (thread_id key)', () => {
   cleanup();
 });
 
+test('setAgent stamps finishedAt on both "waiting" and "done", consumedAt on pickup', () => {
+  const { store, cleanup } = freshStore();
+  const b = store.create({});
+  assert.ok(!store.get(b.id).agent.finishedAt, 'no finishedAt initially');
+  store.setAgent(b.id, { status: 'waiting' }); // handing back by starting to wait
+  assert.ok(store.get(b.id).agent.finishedAt, 'waiting stamps finishedAt (inferred finish)');
+  const afterWaiting = store.get(b.id).agent.finishedAt;
+  store.setAgent(b.id, { status: 'working', consumed: true }); // picked up a batch
+  const ag = store.get(b.id).agent;
+  assert.ok(ag.consumedAt, 'consumed stamps consumedAt');
+  assert.equal(ag.finishedAt, afterWaiting, 'working does not restamp finishedAt');
+  store.setAgent(b.id, { status: 'done' });
+  assert.ok(store.get(b.id).agent.finishedAt >= afterWaiting, 'done stamps finishedAt too');
+  cleanup();
+});
+
 test('remove deletes a board', () => {
   const { store, dir, cleanup } = freshStore();
   const b = store.create({});

@@ -882,13 +882,14 @@
           if (next.threads.length > prevCount) toast('Agent posted a new thread');
           const nowAgent = (next.agent && next.agent.status) || 'idle';
           const nowConsumed = (next.agent && next.agent.consumedAt) || '';
+          const handedBack = (s) => s === 'waiting' || s === 'done';
           // TWO sounds only:
           // (1) the agent picked up a submitted batch and started working (consumedAt bumps);
           if (nowConsumed > prevConsumed) { toast('Agent picked up your feedback — working…'); beepConfirm(); }
-          // (2) the agent finished the whole round.
-          if (nowAgent === 'done' && prevAgent !== 'done') { toast('Agent finished the round ✓'); beep(); }
-          // becoming "your turn" is visual-only (happens every wait cycle -> no beep)
-          else if (nowAgent === 'waiting' && prevAgent !== 'waiting') toast('Agent is ready — your turn to reply');
+          // (2) the agent finished the round and handed it back to you — via
+          //     finish_working (done) OR simply by starting to wait again. Fires
+          //     once per hand-back (done -> waiting doesn't double-ring).
+          if (handedBack(nowAgent) && !handedBack(prevAgent)) { toast('Agent finished — your turn ✓'); beep(); }
         }
         firstLoad = false;
       }
@@ -908,7 +909,7 @@
       // ---- sound (per-board toggle, default off) ----
       const SND_KEY = 'rt-sound-' + BOARD;
       let soundOn = localStorage.getItem(SND_KEY) === '1';
-      function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — plays only when the agent receives your feedback and when it finishes the round' : 'Sound off — click to enable the two round sounds (feedback received / round finished)'; }
+      function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — plays when the agent picks up your feedback and when it hands the round back to you' : 'Sound off — click to enable the two round sounds (picked up / your turn)'; }
       // ONE shared AudioContext. Browser autoplay policy suspends audio until a
       // user gesture *this page-load* — and the bell state is persisted, so after a
       // reload it can read 🔔 while audio is still locked. We create the context

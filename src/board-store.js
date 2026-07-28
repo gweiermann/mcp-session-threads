@@ -287,7 +287,11 @@ export class BoardStore extends EventEmitter {
     const b = this.#require(id);
     if (typeof status === 'string') {
       b.agent.status = status;
-      if (status === 'done') b.agent.finishedAt = now(); // marks the end of a work round
+      // The agent handed the round back to the user — either by finishing
+      // (finish_working -> done) or simply by starting to wait for feedback.
+      // Both mark the end of a work round (drives the "finished" sound + the
+      // "ignored by agent" detection even when finish_working was skipped).
+      if (status === 'done' || status === 'waiting') b.agent.finishedAt = now();
     }
     if (typeof activity === 'string') b.agent.activity = activity;
     if (currentThreadId !== undefined) b.agent.currentThreadId = currentThreadId;
