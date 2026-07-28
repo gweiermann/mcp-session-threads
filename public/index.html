@@ -695,7 +695,9 @@
         ta.oninput = () => { d.text = ta.value; d.saved = false; persistDrafts(); expand(); send.disabled = !hasContent(d); updateSubmitZone(); };
         ta.onfocus = expand;
         ta.onblur = () => { if (!ta.value.trim()) collapse(); };
-        ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } };
+        // plain Enter stages this thread's reply; Cmd/Ctrl+Enter falls through to
+        // the global handler, which submits the whole batch.
+        ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) { e.preventDefault(); doSend(); } };
         send.disabled = !hasContent(d); send.onclick = doSend;
         inputRow.append(ta, send);
         ci.appendChild(inputRow);
@@ -705,7 +707,7 @@
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = d.resolve;
         cb.onchange = () => { d.resolve = cb.checked; d.saved = false; persistDrafts(); send.disabled = !hasContent(d); };
         cl.append(cb, document.createTextNode('mark resolved')); meta.appendChild(cl);
-        const hint = document.createElement('span'); hint.className = 'composer-hint'; hint.textContent = 'Enter to send · Shift+Enter for a new line · staged as pending until you Submit'; meta.appendChild(hint);
+        const hint = document.createElement('span'); hint.className = 'composer-hint'; hint.textContent = 'Enter to send · Shift+Enter newline · ⌘/Ctrl+Enter submits all'; meta.appendChild(hint);
         ci.appendChild(meta);
 
         foot.appendChild(ci);
@@ -1032,6 +1034,15 @@
       function onKey(e) {
         const t = e.target;
         const inField = t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable);
+        // ⌘/Ctrl+Enter submits the whole feedback batch from anywhere. If you're
+        // mid-typing a reply, stage it first so it's included.
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          const r = route();
+          if (r.name === 'detail') { const d = drafts[r.id]; if (d && hasContent(d) && !d.saved) saveReply(r.id, true); }
+          if (!$('submitBtn').disabled) submit();
+          return;
+        }
         if (e.key === 'Escape') {
           if (inField) { t.blur(); e.preventDefault(); }
           else if (route().name === 'detail') { goList(); e.preventDefault(); }
