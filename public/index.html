@@ -909,19 +909,34 @@
       const SND_KEY = 'rt-sound-' + BOARD;
       let soundOn = localStorage.getItem(SND_KEY) === '1';
       function syncSoundBtn() { $('soundBtn').textContent = soundOn ? '🔔' : '🔕'; $('soundBtn').title = soundOn ? 'Sound on — plays only when the agent receives your feedback and when it finishes the round' : 'Sound off — click to enable the two round sounds (feedback received / round finished)'; }
+      // ONE shared AudioContext. Browser autoplay policy suspends audio until a
+      // user gesture *this page-load* — and the bell state is persisted, so after a
+      // reload it can read 🔔 while audio is still locked. We create the context
+      // lazily and resume it on the first user gesture (below), then reuse it; a
+      // beep triggered later by an SSE event therefore plays instead of landing on
+      // a fresh suspended context.
+      let audioCtx = null;
+      function getAudio() {
+        if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch { audioCtx = null; } }
+        return audioCtx;
+      }
+      function unlockAudio() { const ac = getAudio(); if (ac && ac.state === 'suspended') ac.resume().catch(() => {}); }
       // play one or more sine blips; each note is [frequency, startOffsetSec, durationSec]
       function playTones(notes) {
         if (!soundOn) return;
-        try {
-          const ac = new (window.AudioContext || window.webkitAudioContext)();
-          for (const [freq, at, dur] of notes) {
-            const o = ac.createOscillator(), g = ac.createGain();
-            o.connect(g); g.connect(ac.destination); o.type = 'sine'; o.frequency.value = freq;
-            const t0 = ac.currentTime + at;
-            g.gain.setValueAtTime(0.001, t0); g.gain.exponentialRampToValueAtTime(0.15, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-            o.start(t0); o.stop(t0 + dur + 0.01);
-          }
-        } catch {}
+        const ac = getAudio(); if (!ac) return;
+        const emit = () => {
+          try {
+            for (const [freq, at, dur] of notes) {
+              const o = ac.createOscillator(), g = ac.createGain();
+              o.connect(g); g.connect(ac.destination); o.type = 'sine'; o.frequency.value = freq;
+              const t0 = ac.currentTime + at;
+              g.gain.setValueAtTime(0.001, t0); g.gain.exponentialRampToValueAtTime(0.15, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+              o.start(t0); o.stop(t0 + dur + 0.01);
+            }
+          } catch { /* ignore */ }
+        };
+        if (ac.state === 'suspended') ac.resume().then(emit).catch(emit); else emit();
       }
       // your-turn / finished: a single clear high tone
       function beep() { playTones([[880, 0, 0.35]]); }
@@ -1055,7 +1070,12 @@
       $('newNotes').addEventListener('input', () => { notes = $('newNotes').value; persistNotes(); updateSubmitZone(); });
       $('submitBtn').onclick = submit;
       syncSoundBtn();
-      $('soundBtn').onclick = () => { soundOn = !soundOn; localStorage.setItem(SND_KEY, soundOn ? '1' : '0'); syncSoundBtn(); if (soundOn) beep(); };
+      $('soundBtn').onclick = () => { soundOn = !soundOn; localStorage.setItem(SND_KEY, soundOn ? '1' : '0'); syncSoundBtn(); unlockAudio(); if (soundOn) beep(); };
+      // Unlock audio on the first user interaction so later agent-triggered beeps
+      // (fired from SSE events, not clicks) actually play. Needed because the bell
+      // is remembered across reloads but the browser re-locks audio each page-load.
+      window.addEventListener('pointerdown', unlockAudio);
+      window.addEventListener('keydown', unlockAudio);
       syncFileRootBtn();
       $('fileRootBtn').onclick = () => {
         const cur = fileRoot || (state && state.key) || '';
