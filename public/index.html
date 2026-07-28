@@ -888,14 +888,15 @@
           if (next.threads.length > prevCount) toast('Agent posted a new thread');
           const nowAgent = (next.agent && next.agent.status) || 'idle';
           const nowConsumed = (next.agent && next.agent.consumedAt) || '';
-          const handedBack = (s) => s === 'waiting' || s === 'done';
           // TWO sounds only:
           // (1) the agent picked up a submitted batch and started working (consumedAt bumps);
           if (nowConsumed > prevConsumed) { toast('Agent picked up your feedback — working…'); beepConfirm(); }
-          // (2) the agent finished the round and handed it back to you — via
-          //     finish_working (done) OR simply by starting to wait again. Fires
-          //     once per hand-back (done -> waiting doesn't double-ring).
-          if (handedBack(nowAgent) && !handedBack(prevAgent)) { toast('Agent finished — your turn ✓'); beep(); }
+          // (2) the agent finished the round and handed it back — only when it was
+          //     actually WORKING and now hands back (waiting/done). Re-polling
+          //     wait_for_feedback after a timeout goes idle -> waiting with no work
+          //     done, so it stays silent (no ping every poll). done -> waiting
+          //     doesn't double-ring either (prev isn't "working").
+          if ((nowAgent === 'waiting' || nowAgent === 'done') && prevAgent === 'working') { toast('Agent finished — your turn ✓'); beep(); }
         }
         firstLoad = false;
       }
@@ -961,9 +962,16 @@
       // ---- file links (markdown [text](path[:line[:col]])) ----
       // Open the file in the editor via the vscode:// scheme. Relative paths
       // resolve against the file base (board key by default, overridable via 📁).
+      // Use a real anchor click within the user's click gesture: an <iframe>.src
+      // only *activates* the editor without reliably delivering the deep-link
+      // payload (opens the app but not the file/line), whereas a top-level click
+      // passes the full path+line to the OS handler.
       function openExternal(url) {
-        const f = document.createElement('iframe'); f.style.display = 'none'; f.src = url;
-        document.body.appendChild(f); setTimeout(() => { try { f.remove(); } catch {} }, 1500);
+        const a = document.createElement('a');
+        a.href = url; a.rel = 'noopener'; a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { try { a.remove(); } catch {} }, 1000);
       }
       function fileBase() { return (fileRoot || (state && state.key) || '').replace(/\/+$/, ''); }
       function handleFileLink(raw) {
