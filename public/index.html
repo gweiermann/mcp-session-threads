@@ -818,12 +818,14 @@
         const mine = open.filter((t) => needsAttention(t) || isStaged(t));
         const mineTotal = mine.length;
         const staged = mine.filter(isStaged).length;
+        // enablement counts a staged reply on ANY thread (incl. resolved reopen / deferred)
+        const stagedTotal = state.threads.filter(isStaged).length;
         const allDone = mineTotal > 0 && staged === mineTotal;
         $('progress').textContent = mineTotal ? `${staged} of ${mineTotal} replied` : 'Nothing to reply to';
-        $('submitZone').classList.toggle('ready', allDone);
-        const anything = staged > 0 || notes.trim();
+        $('submitZone').classList.toggle('ready', allDone && stagedTotal === staged);
+        const anything = stagedTotal > 0 || notes.trim();
         $('submitBtn').disabled = !anything;
-        $('submitBtn').textContent = !anything ? 'Nothing to submit' : (allDone && staged > 0 ? 'Submit feedback →' : 'Submit now');
+        $('submitBtn').textContent = !anything ? 'Nothing to submit' : (allDone && staged > 0 && stagedTotal === staged ? 'Submit feedback →' : 'Submit now');
       }
 
       function updateGutter(r) {
@@ -839,9 +841,10 @@
 
       async function submit() {
         const replies = [];
-        // include DEFERRED threads too — a reply/resolve staged on a parked
-        // thread must still be sent (it un-parks it server-side).
-        for (const t of state.threads.filter((x) => x.status !== 'resolved')) {
+        // collect a staged reply on ANY thread — including deferred (it un-parks)
+        // and RESOLVED (a reply reopens it). Filtering these out silently dropped
+        // the reply and left the thread resolved.
+        for (const t of state.threads) {
           const d = drafts[t.id];
           if (d && d.saved && hasContent(d)) replies.push({ thread_id: t.id, action: d.action, text: d.text, resolve: d.resolve });
         }
