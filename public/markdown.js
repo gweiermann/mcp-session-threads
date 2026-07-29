@@ -20,13 +20,19 @@ function inline(t) {
     // rendered as a real hash href so middle-click opens it in a new tab too.
     const th = url.match(/^thread:([\w-]+)$/i);
     if (th) return `<a href="#/t/${th[1]}" class="thread-link" title="Open thread ${th[1]}">${txt}</a>`;
-    // Any other URL scheme (javascript:, data:, vscode:, tel:, …) is neutralised.
-    // A "scheme" has no "/" or "." before its ":", which keeps file paths like
-    // "src/foo.ts:42" out of this branch.
-    if (/^[a-z][a-z0-9+-]*:/i.test(url)) return `<a href="#">${txt}</a>`;
+    // A full editor deep link the agent wrote directly, e.g.
+    // vscode://file/Users/…/foo.ts:42 — treat it as a file link on its absolute
+    // path so the UI opens it (rather than neutralising the vscode: scheme).
+    const vs = url.match(/^vscode:\/\/file(\/.+)$/i);
+    if (vs) return `<a href="#" class="file-link" title="Open in VS Code" data-file="${vs[1].replace(/"/g, '&quot;')}">${txt}</a>`;
+    // Any other URL scheme (javascript:, data:, tel:, …) is neutralised. A
+    // "scheme" has no "/" or "." before its ":", which keeps file paths like
+    // "src/foo.ts:42" out of this branch. Render WITHOUT href so a click is inert
+    // (an href="#" would jump to the dashboard).
+    if (/^[a-z][a-z0-9+-]*:/i.test(url)) return `<a class="dead-link" title="blocked link">${txt}</a>`;
     // Otherwise it's a file path (relative or absolute, optionally :line[:col]).
-    // The UI turns clicks on these into "open in editor / copy path" — the path
-    // lives in data-file (escaped) so it is never an executable href.
+    // The UI turns clicks on these into "open in editor" — the path lives in
+    // data-file (escaped) so it is never an executable href.
     return `<a href="#" class="file-link" title="Open in VS Code" data-file="${url.replace(/"/g, '&quot;')}">${txt}</a>`;
   });
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');

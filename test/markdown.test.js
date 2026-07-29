@@ -9,11 +9,19 @@ test('escapes HTML — no injection from agent/user text', () => {
   assert.ok(html.includes('<strong>bold</strong>'));
 });
 
-test('links: only safe hrefs; javascript: is neutralised', () => {
+test('links: only safe hrefs; javascript: is neutralised inertly', () => {
   const html = mdToHtml('[ok](https://x.io) [bad](javascript:alert(1))');
   assert.ok(html.includes('href="https://x.io"'));
-  assert.ok(html.includes('href="#"'));
-  assert.ok(!html.toLowerCase().includes('javascript:'));
+  assert.ok(!html.toLowerCase().includes('javascript:'), 'no javascript: anywhere');
+  assert.ok(html.includes('dead-link'), 'the bad link is neutralised to an inert (no-href) element');
+  assert.ok(!/\[bad\]|href="javascript/i.test(html), 'not an executable link');
+});
+
+test('vscode://file deep links render as file links (do not jump to the dashboard)', () => {
+  const html = mdToHtml('[spec:3587](vscode://file/Users/x/proj/index.spec.ts:3587)');
+  assert.ok(html.includes('class="file-link"'), 'a vscode://file link becomes a file-link');
+  assert.ok(html.includes('data-file="/Users/x/proj/index.spec.ts:3587"'), 'absolute path + line preserved');
+  assert.ok(!html.toLowerCase().includes('vscode://'), 'the raw scheme is not left as an href');
 });
 
 test('file-path links become file-links carrying the path in data-file', () => {
@@ -36,7 +44,7 @@ test('thread:<id> links become in-board thread links', () => {
   assert.ok(html.includes('href="#/t/abc123"'), 'points at the thread route (middle-clickable)');
   // a bogus thread target must not become a link target
   assert.ok(!mdToHtml('[x](thread:not/valid)').includes('thread-link'), 'only plain ids are accepted');
-  assert.ok(mdToHtml('[x](thread:not/valid)').includes('href="#"'), 'anything else stays inert');
+  assert.ok(mdToHtml('[x](thread:not/valid)').includes('dead-link'), 'a non-id thread: target is neutralised inertly');
 });
 
 test('inline + fenced code', () => {
