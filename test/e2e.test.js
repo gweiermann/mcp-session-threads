@@ -51,7 +51,7 @@ test('end-to-end: MCP proxy + daemon full flow', async (t) => {
   await A.client.connect(A.transport);
 
   const tools = (await A.client.listTools()).tools.map((x) => x.name).sort();
-  const expected = ['add_message', 'backup_board', 'create_thread', 'defer_thread', 'export_board', 'finish_working', 'get_board_url', 'get_notes', 'import_threads', 'list_boards', 'list_threads', 'mark_thread_done', 'reopen_thread', 'resume_thread', 'resolve_thread', 'set_summary', 'start_working', 'use_board', 'wait_for_feedback', 'work_on_thread'];
+  const expected = ['add_message', 'backup_board', 'create_thread', 'defer_thread', 'export_board', 'finish_working', 'get_board_url', 'get_notes', 'import_threads', 'list_boards', 'list_threads', 'mark_thread_done', 'reopen_thread', 'resume_thread', 'resolve_thread', 'set_summary', 'set_thread_status', 'start_working', 'use_board', 'wait_for_feedback', 'work_on_thread'];
   assert.ok(expected.every((n) => tools.includes(n)), `all ${expected.length} tools registered (got ${tools.length})`);
 
   const idA = boardId(await urlOf(A.client));

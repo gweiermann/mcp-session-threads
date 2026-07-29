@@ -129,6 +129,8 @@
       .chip.waiting-agent { background: color-mix(in srgb, var(--amber) 12%, var(--panel-2)); color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 35%, var(--border)); }
       .chip.unread-chip { background: color-mix(in srgb, var(--accent) 15%, var(--panel-2)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); }
       .chip.ignored { background: color-mix(in srgb, var(--red) 14%, var(--panel-2)); color: var(--red); border: 1px solid color-mix(in srgb, var(--red) 40%, var(--border)); }
+      .chip.seen { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+      .chip.needs-input { background: color-mix(in srgb, var(--accent) 15%, var(--panel-2)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); }
       .chip.deferred { background: var(--panel-2); color: var(--muted); border: 1px dashed var(--border); }
       .chip.resolved { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
       .section-note { color: var(--muted); font-size: 13px; padding: 2px 4px 10px; }
@@ -331,6 +333,10 @@
       const lastAuthor = (t) => { const m = lastMsg(t); return m ? m.author : null; };
       // The agent's last message is a "status" update -> it is still working.
       const agentWorkingLast = (t) => { const m = lastMsg(t); return !!(m && m.author === 'agent' && m.intent === 'status'); };
+      // Agent set a per-thread progress marker (no message): seen / working keep the
+      // thread on the agent's side; the last agent message asks for input.
+      const agentActive = (t) => t.work === 'seen' || t.work === 'working';
+      const needsInput = (t) => { const m = lastMsg(t); return !!(m && m.author === 'agent' && (m.intent === 'question' || m.intent === 'proposal' || m.intent === 'discussion')); };
       // Agent parked it: shown in the Deferred lane, ignored by the review flow until resumed.
       const isDeferred = (t) => t.deferred === true && t.status !== 'resolved';
       const userRepliedLast = (t) => lastAuthor(t) === 'user';
@@ -349,7 +355,7 @@
       };
       // Ball in the AGENT's court: you replied last (and it hasn't finished without
       // answering), OR the agent posted a status update (still working).
-      const awaitingAgent = (t) => t.status !== 'resolved' && !ignoredByAgent(t) && (userRepliedLast(t) || agentWorkingLast(t));
+      const awaitingAgent = (t) => t.status !== 'resolved' && !ignoredByAgent(t) && (userRepliedLast(t) || agentWorkingLast(t) || agentActive(t));
       // You've handled it (staged OR already submitted) -> not on your plate.
       const isAnswered = (t) => t.status !== 'resolved' && (awaitingAgent(t) || isStaged(t));
       // Truly needs you: open, not deferred, agent spoke last (or fresh), no staged reply.
@@ -462,14 +468,8 @@
         const title = document.createElement('span'); title.className = 'rtitle'; title.textContent = t.title;
         main.append(dotSlot, title); head.appendChild(main);
 
-        // agent progress indicators (tags & message-preview intentionally omitted from the dashboard)
-        if (!deferred && state.agent && state.agent.currentThreadId === t.id && !resolved) head.appendChild(chip('⚙ working', 'working'));
-        else if (!deferred && t.work === 'done' && unread) head.appendChild(chip('✓ done', 'agentdone'));
-        if (resolved) head.appendChild(chip('resolved', 'resolved'));
-        else if (deferred) head.appendChild(chip('⏸ deferred', 'deferred'));
-        else if (staged) head.appendChild(chip('✓ ' + ((drafts[t.id] && drafts[t.id].action) || 'pending'), 'replied'));
-        else if (ignoredByAgent(t)) head.appendChild(chip('⚠ ignored by agent', 'ignored'));
-        else if (awaitingAgent(t)) head.appendChild(replyChip(t));
+        // one status chip per thread — the lifecycle the user reads at a glance
+        const sc = statusChip(t); if (sc) head.appendChild(sc);
 
         const chev = document.createElement('span'); chev.className = 'chev'; chev.textContent = '›'; head.appendChild(chev);
         // plain left click -> in-page navigation; let cmd/ctrl/shift/middle-click
@@ -483,13 +483,25 @@
         return card;
       }
       function chip(text, cls) { const c = document.createElement('span'); c.className = 'chip ' + cls; c.textContent = text; return c; }
-      // chip for a thread whose ball is with the agent: "replied" (submitted but the
-      // agent hasn't picked the batch up yet) -> "waiting on agent" (picked up) ; or
-      // "agent working" when the agent's own last message was a status update.
-      function replyChip(t) {
-        if (agentWorkingLast(t)) return chip('⏳ agent working', 'waiting-agent');
-        if (notPickedUp(t)) return chip('✓ replied', 'replied');
-        return chip('⏳ waiting on agent', 'waiting-agent');
+      // The single status chip for a thread — the lifecycle the user reads at a
+      // glance. Returns null when nothing needs a chip (a plain fresh finding just
+      // shows the unread dot). Precedence: closed states, then the agent's
+      // per-thread markers, then reply state, then "needs your input".
+      function statusChip(t) {
+        if (t.status === 'resolved') return chip('resolved', 'resolved');
+        if (isDeferred(t)) return chip('⏸ deferred', 'deferred');
+        if (isStaged(t)) return chip('✓ ' + ((drafts[t.id] && drafts[t.id].action) || 'pending'), 'replied');
+        if (t.work === 'done') return chip('✓ done', 'agentdone');
+        if (ignoredByAgent(t)) return chip('⚠ ignored by agent', 'ignored');
+        if (t.work === 'working') return chip('⚙ working', 'working');
+        if (t.work === 'seen') return chip('👀 seen', 'seen');
+        if (awaitingAgent(t)) {
+          if (agentWorkingLast(t)) return chip('⚙ working', 'working');
+          if (notPickedUp(t)) return chip('✓ replied', 'replied');
+          return chip('⏳ waiting on agent', 'waiting-agent');
+        }
+        if (needsInput(t)) return chip('🙋 needs your input', 'needs-input');
+        return null; // fresh finding on your plate: the unread dot is enough
       }
 
       function renderList(main) {
@@ -569,10 +581,7 @@
           un.onclick = () => undefer(t.id);
           top.appendChild(un);
         }
-        else if (ignoredByAgent(t)) top.appendChild(chip('⚠ ignored by agent', 'ignored'));
-        else if (isStaged(t)) top.appendChild(chip('✓ replied (pending)', 'replied'));
-        else if (awaitingAgent(t)) top.appendChild(replyChip(t));
-        else if (isUnread(t)) top.appendChild(chip('● unread', 'unread-chip'));
+        else { const sc = statusChip(t); if (sc) top.appendChild(sc); else if (isUnread(t)) top.appendChild(chip('● unread', 'unread-chip')); }
         if (idx >= 0) { const pos = document.createElement('span'); pos.className = 'pos'; pos.textContent = `${idx + 1}/${open.length}`; top.appendChild(pos); }
         const prevBtn = document.createElement('button'); prevBtn.className = 'btn small'; prevBtn.textContent = '‹'; prevBtn.title = 'Previous (j)'; prevBtn.disabled = idx <= 0; prevBtn.onclick = () => goRel(-1, true); top.appendChild(prevBtn);
         const nextBtn = document.createElement('button'); nextBtn.className = 'btn small'; nextBtn.textContent = '›'; nextBtn.title = 'Next (k)'; nextBtn.disabled = idx < 0 || idx >= open.length - 1; nextBtn.onclick = () => goRel(1, true); top.appendChild(nextBtn);

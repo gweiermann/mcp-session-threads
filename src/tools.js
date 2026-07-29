@@ -10,8 +10,9 @@ export const INSTRUCTIONS = [
   'Keep set_summary VERY SHORT — a couple of lines of big-picture orientation, NOT a recap. Do not restate what threads already say. Assume the summary may go UNREAD: anything the user must act on belongs in a THREAD, never only in the summary. Good uses: the one-line overall status/goal, something not captured in any thread, or shifting attention (e.g. "you probably haven\'t seen my reply in thread abc123 — please look").',
   'Typical flow: create_thread per finding/question (freestyle `tags` like ["finding","high"] and a few tailored `actions` like ["Fix","Approve"]), set_summary, then call wait_for_feedback ONCE — it blocks a long time and returns the moment the user submits; only call again if it returns a "no feedback yet" notice.',
   'wait_for_feedback also returns a checklist of every thread awaiting YOUR response (the user replied, ball in your court). Address EACH one before waiting again: reply with add_message, or if no reply is warranted mark_thread_done / resolve_thread / defer_thread. A thread stays on that checklist until you do one of those — do not leave any unaddressed unless it is deferred or done.',
-  'Choose add_message `intent` by whose turn is next. Use intent:"status" ONLY for an interim, nice-to-have update where you are GUARANTEED to follow up with a real reply (e.g. "on it — here is the plan") — it keeps the thread "waiting on agent" and does not prompt the user, so you MUST come back with the actual reply. Never use "status" as your final answer or when you want the user to respond. When you are discussing / want the user\'s take, use intent:"discussion" (question/proposal likewise) so the turn goes to the user. intent:"done" when the thread is finished.',
-  'The board tracks WHOSE TURN it is so the UI can show the right progress bar and ping the user. Share progress as you act: start_working when you begin, work_on_thread(id) before a specific thread (it is highlighted), mark_thread_done(id) when finished, finish_working at the end. wait_for_feedback automatically flips the board to "your turn" (plays the user a sound) while it blocks, then back when they submit — you do not manage that state yourself.',
+  'Give each thread a lightweight lifecycle the user can read at a glance — "agent seen it → works on it → needs your input → finished" — WITHOUT narrating: set_thread_status(id,"seen") when you acknowledge it, set_thread_status(id,"working") while on it, and set_thread_status(id,"done") (or a real reply / resolve_thread) when finished. These need NO message. "agent needs your input" = post add_message with intent "question"/"proposal"/"discussion" (that hands the turn to the user).',
+  'A status MESSAGE is optional and rarely needed — prefer the message-less markers above. Only use add_message intent:"status" when a short note genuinely helps (keep it to one short status line, do NOT repeat back what you were asked); it keeps the thread on your side, so you must still follow up with the real reply. For your actual answer use a normal add_message; discussion/question/proposal hand the turn to the user.',
+  'The board tracks WHOSE TURN it is so the UI can show the right progress bar and ping the user. Share overall progress with start_working when you begin and finish_working at the end. wait_for_feedback automatically flips the board to "your turn" (plays the user a sound) while it blocks, then back when they submit — you do not manage that state yourself.',
   'Do NOT auto-resolve threads for heavy/uncertain changes — leave them open for the user to confirm; only resolve small, clear-cut items.',
   'Order the review for the user: pass the most important threads first to prioritize_threads (or set `priority` on create_thread) so the highest-impact items sit at the top of "Needs your attention" and get answered first.',
   'For real work that is not a good time to tackle yet (blocked, out of scope for this pass), defer_thread parks it in a Deferred lane the user can ignore — you MUST give a one-sentence `pickup_hint` saying when to resume. Every wait_for_feedback echoes your parked threads with their hints, so they stay your open work; when a hint\'s condition is met, resume_thread un-parks it AND posts a why-now message. If the user replies on a deferred thread it un-parks itself and returns to your checklist — always pick it up then.',
@@ -230,6 +231,17 @@ export function registerTools(mcp, client) {
     const j = await client.call('/notes');
     return ok(JSON.stringify(j.notes, null, 2));
   });
+
+  // ---- per-thread progress (no message needed) ----
+  mcp.tool(
+    'set_thread_status',
+    'Mark a thread\'s progress WITHOUT posting a message, so the user sees a lightweight lifecycle at a glance: "seen" (you have read/acknowledged it), "working" (actively on it), "done" (you finished it), or "clear" (remove the marker). Prefer this over a status message for routine progress — it shows a small per-thread chip and does not repeat back what you were asked. "seen"/"working" keep the thread on your side (the user is not prompted). To ask the user something, post add_message with intent "question"/"proposal"/"discussion" instead.',
+    { thread_id: S, status: z.enum(['seen', 'working', 'done', 'clear']) },
+    async ({ thread_id, status }) => {
+      await client.call('/agent', { method: 'POST', body: { thread_id, work: status === 'clear' ? null : status } });
+      return ok(`Marked ${thread_id} as ${status}.`);
+    }
+  );
 
   // ---- progress sharing ----
   mcp.tool('start_working', 'Tell the UI you started acting on the feedback (shows a working indicator).', { activity: S.optional() }, async ({ activity }) => {

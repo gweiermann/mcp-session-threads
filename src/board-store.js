@@ -28,7 +28,8 @@ export function makeThread(raw = {}) {
     pickupHint: raw.pickupHint ? String(raw.pickupHint) : '',
     // agent-controlled priority; higher sorts first in the review list (0 = default)
     priority: Number.isFinite(raw.priority) ? raw.priority : 0,
-    work: raw.work === 'working' || raw.work === 'done' ? raw.work : null,
+    // agent's per-thread progress marker (set without a message): seen -> working -> done
+    work: ['seen', 'working', 'done'].includes(raw.work) ? raw.work : null,
     createdBy: raw.createdBy === 'user' ? 'user' : 'agent',
     actions: Array.isArray(raw.actions) ? raw.actions.map(String) : [...DEFAULT_ACTIONS],
     messages: Array.isArray(raw.messages)
@@ -297,7 +298,7 @@ export class BoardStore extends EventEmitter {
     if (currentThreadId !== undefined) b.agent.currentThreadId = currentThreadId;
     if (consumed) b.agent.consumedAt = now(); // the agent just picked up a submitted batch
     b.agent.updatedAt = now();
-    if (threadId && (work === 'working' || work === 'done' || work === null)) {
+    if (threadId && (work === 'seen' || work === 'working' || work === 'done' || work === null)) {
       const t = b.threads.find((x) => x.id === threadId);
       if (t) t.work = work;
     }

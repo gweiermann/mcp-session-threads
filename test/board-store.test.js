@@ -110,6 +110,19 @@ test('setAgent tracks overall status + per-thread work (thread_id key)', () => {
   cleanup();
 });
 
+test('per-thread work marker accepts seen/working/done and clears', () => {
+  const { store, cleanup } = freshStore();
+  const b = store.create({});
+  const t = store.addThread(b.id, { title: 't' });
+  for (const w of ['seen', 'working', 'done']) {
+    store.setAgent(b.id, { thread_id: t.id, work: w });
+    assert.equal(store.get(b.id).threads[0].work, w, `work set to ${w}`);
+  }
+  store.setAgent(b.id, { thread_id: t.id, work: null });
+  assert.equal(store.get(b.id).threads[0].work, null, 'work cleared');
+  cleanup();
+});
+
 test('setAgent stamps finishedAt on both "waiting" and "done", consumedAt on pickup', () => {
   const { store, cleanup } = freshStore();
   const b = store.create({});
