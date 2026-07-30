@@ -943,22 +943,34 @@
         return audioCtx;
       }
       function unlockAudio() { const ac = getAudio(); if (ac && ac.state === 'suspended') ac.resume().catch(() => {}); }
+      // Serialise sounds: when two fire back-to-back (e.g. "finished" then an
+      // immediate "picked up"), the second waits until the first ends + a small
+      // gap, so they play in sequence instead of overlapping.
+      let nextSoundAt = 0; // performance.now() ms when the audio channel is free again
+      const SOUND_GAP_MS = 200;
       // play one or more sine blips; each note is [frequency, startOffsetSec, durationSec]
       function playTones(notes) {
         if (!soundOn) return;
         const ac = getAudio(); if (!ac) return;
+        const lenMs = notes.reduce((mx, n) => Math.max(mx, n[1] + n[2]), 0) * 1000;
+        const now = performance.now();
+        const startAt = Math.max(now, nextSoundAt);
+        nextSoundAt = startAt + lenMs + SOUND_GAP_MS; // reserve this sound's slot
         const emit = () => {
-          try {
-            for (const [freq, at, dur] of notes) {
-              const o = ac.createOscillator(), g = ac.createGain();
-              o.connect(g); g.connect(ac.destination); o.type = 'sine'; o.frequency.value = freq;
-              const t0 = ac.currentTime + at;
-              g.gain.setValueAtTime(0.001, t0); g.gain.exponentialRampToValueAtTime(0.15, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
-              o.start(t0); o.stop(t0 + dur + 0.01);
-            }
-          } catch { /* ignore */ }
+          const fire = () => {
+            try {
+              for (const [freq, at, dur] of notes) {
+                const o = ac.createOscillator(), g = ac.createGain();
+                o.connect(g); g.connect(ac.destination); o.type = 'sine'; o.frequency.value = freq;
+                const t0 = ac.currentTime + at;
+                g.gain.setValueAtTime(0.001, t0); g.gain.exponentialRampToValueAtTime(0.15, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+                o.start(t0); o.stop(t0 + dur + 0.01);
+              }
+            } catch { /* ignore */ }
+          };
+          if (ac.state === 'suspended') ac.resume().then(fire).catch(fire); else fire();
         };
-        if (ac.state === 'suspended') ac.resume().then(emit).catch(emit); else emit();
+        setTimeout(emit, Math.max(0, startAt - now));
       }
       // your-turn / finished: a single clear high tone
       function beep() { playTones([[880, 0, 0.35]]); }
