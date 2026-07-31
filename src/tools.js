@@ -10,7 +10,7 @@ export const INSTRUCTIONS = [
   'Write for a user who SKIMS and only sees the board (not your terminal, diffs, or tool output). Be concise BY DEFAULT: if it is done, just say it is done; if there is something to flag, flag it; otherwise do NOT narrate HOW you did it — that verbosity is unwanted. CRUCIAL: when a message is ABOUT code, INCLUDE the actual code snippet(s) you mean. Talking about code the user cannot see makes the message worthless and frustrating — paste the relevant lines (fenced) or link them with a repo-relative path, do not just describe them.',
   'Keep set_summary VERY SHORT — a couple of lines of big-picture orientation, NOT a recap. Do not restate what threads already say. Assume the summary may go UNREAD: anything the user must act on belongs in a THREAD, never only in the summary. Good uses: the one-line overall status/goal, something not captured in any thread, or shifting attention (e.g. "you probably haven\'t seen my reply in thread abc123 — please look").',
   'Typical flow: create_thread per finding/question (freestyle `tags` like ["finding","high"] and a few tailored `actions` like ["Fix","Approve"]), set_summary, then call wait_for_feedback ONCE — it blocks a long time and returns the moment the user submits; only call again if it returns a "no feedback yet" notice.',
-  'wait_for_feedback also returns a checklist of every thread awaiting YOUR response (the user replied, ball in your court). Address EACH one before waiting again: reply with add_message, or if no reply is warranted mark_thread_done / resolve_thread / defer_thread. A thread stays on that checklist until you do one of those — do not leave any unaddressed unless it is deferred or done.',
+  'wait_for_feedback also returns your TODO list: every thread you still owe work on — the user replied to it, OR you marked it in-progress (set_thread_status seen/working, or a status message) but have not finished. Finish EACH before waiting again: reply with add_message, or mark_thread_done / resolve_thread / defer_thread. A thread stays on that list until you do one of those — never leave a "working" thread hanging; when it is actually done, mark it done (or reply/resolve).',
   'Give each thread a lightweight lifecycle the user can read at a glance — "agent seen it → works on it → needs your input → finished" — WITHOUT narrating: set_thread_status(id,"seen") when you acknowledge it, set_thread_status(id,"working") while on it, and set_thread_status(id,"done") (or a real reply / resolve_thread) when finished. These need NO message. "agent needs your input" = post add_message with intent "question"/"proposal"/"discussion" (that hands the turn to the user).',
   'A status MESSAGE is optional and rarely needed — prefer the message-less markers above. Only use add_message intent:"status" when a short note genuinely helps (keep it to one short status line, do NOT repeat back what you were asked); it keeps the thread on your side, so you must still follow up with the real reply. For your actual answer use a normal add_message; discussion/question/proposal hand the turn to the user.',
   'NEVER let a thread\'s LAST message be a "working"/status one when you are actually finished. A working state reads as "still in progress" and does not prompt the user, so they will assume you are not done and will not engage. When you finish, post the real reply (or intent:"done" / resolve_thread / set_thread_status done) so the thread lands in a finished, user-visible state.',
@@ -42,8 +42,8 @@ function formatFeedback(p, outstanding = [], deferred = []) {
     notes.forEach((n, i) => lines.push('', `— note ${i + 1}:`, '"""', typeof n === 'string' ? n : n.text, '"""'));
   }
   if (outstanding.length) {
-    lines.push('', `⚠ ${outstanding.length} thread(s) are awaiting YOUR response (the ball is in your court — this includes the replies above plus any carried over from before). Address EVERY one this cycle: reply with add_message, or if no reply is warranted, mark_thread_done / resolve_thread / defer_thread. A thread only drops off this list once you reply, mark it done, resolve it, or defer it:`);
-    for (const t of outstanding) lines.push(`  • ${t.id} — "${t.title}"`);
+    lines.push('', `⚠ ${outstanding.length} thread(s) still need YOU to finish them — the user replied to them, OR you marked them in-progress (seen/working/status) but have not finished. This is your TODO list; do not leave any of them hanging. Finish EACH this cycle: post the real reply, or mark_thread_done / resolve_thread / defer_thread. A thread only drops off once you reply, mark it done, resolve it, or defer it:`);
+    for (const t of outstanding) lines.push(`  • ${t.id} — "${t.title}"${t.work ? ` [${t.work}]` : ''}`);
   }
   if (deferred.length) {
     lines.push('', `⏸ ${deferred.length} deferred thread(s) parked by you — not on the user's plate, but still YOUR open work. Check each pickup condition; when one is met, resume_thread it (with a why-now message). They are also un-parked automatically the moment the user replies to them:`);
@@ -55,16 +55,18 @@ function formatFeedback(p, outstanding = [], deferred = []) {
 
 /**
  * Split the board into what the agent still owes:
- *  - outstanding: ball in the agent's court (user replied last, or its own last
- *    message was a "status" = still working), excluding parked/finished threads.
+ *  - outstanding: ball in the agent's court — the user replied last, OR the agent
+ *    itself marked it in-progress (work "seen"/"working", or a "status" message)
+ *    but has not finished it. Excludes parked and finished (work "done") threads.
  *  - deferred: threads it parked, with their pickup conditions (still its work).
  */
 async function gatherAgentWork(client) {
   try {
     const { threads } = await client.call('/threads');
     const open = threads.filter((t) => t.status === 'open');
+    const owed = (t) => !t.deferred && t.work !== 'done' && (t.lastAuthor === 'user' || t.lastIntent === 'status' || t.work === 'working' || t.work === 'seen');
     return {
-      outstanding: open.filter((t) => !t.deferred && t.work !== 'done' && (t.lastAuthor === 'user' || t.lastIntent === 'status')),
+      outstanding: open.filter(owed),
       deferred: open.filter((t) => t.deferred),
     };
   } catch {

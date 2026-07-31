@@ -160,11 +160,37 @@ test('wait_for_feedback reminds the agent of every thread awaiting its response 
   const out = textOf(await G.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
   // assert against the CHECKLIST section only — the "Feedback received" echo lists
   // every submitted id, and the parked-threads section follows the checklist.
-  assert.match(out, /awaiting YOUR response/, 'includes the outstanding checklist');
-  const checklist = (out.split('awaiting YOUR response')[1] || '').split('deferred thread')[0];
+  assert.match(out, /need YOU to finish/, 'includes the outstanding checklist');
+  const checklist = (out.split('need YOU to finish')[1] || '').split('deferred thread')[0];
   assert.ok(checklist.includes(addr), 'reminds about the un-parked awaiting-agent thread');
   assert.ok(!checklist.includes(done), 'a thread the agent marked done is NOT in the checklist');
   assert.ok(!checklist.includes(defer), 'a deferred thread is NOT in the reply checklist');
+});
+
+test('a thread the agent marked "working"/"seen" stays on its wait_for_feedback TODO list', async (t) => {
+  killPort();
+  rmSync(DATA, { recursive: true, force: true });
+  const K = makeClient('K2', '/proj/working-todo');
+  t.after(async () => { await K.client.close().catch(() => {}); killPort(); rmSync(DATA, { recursive: true, force: true }); });
+  await K.client.connect(K.transport);
+  const id = boardId(await urlOf(K.client));
+  const mk = async (title) => textOf(await K.client.callTool({ name: 'create_thread', arguments: { title } })).match(/thread (\w+)/)[1];
+  const working = await mk('Marked working, no user reply');
+  const seen = await mk('Marked seen');
+  const doneT = await mk('Marked done');
+  const ping = await mk('Trigger the wait');
+
+  // the agent marks progress WITHOUT any message and WITHOUT a user reply
+  await K.client.callTool({ name: 'set_thread_status', arguments: { thread_id: working, status: 'working' } });
+  await K.client.callTool({ name: 'set_thread_status', arguments: { thread_id: seen, status: 'seen' } });
+  await K.client.callTool({ name: 'set_thread_status', arguments: { thread_id: doneT, status: 'done' } });
+
+  await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: ping, action: 'go' }], notes: '' }) });
+  const out = textOf(await K.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
+  const checklist = (out.split('need YOU to finish')[1] || '').split('deferred thread')[0];
+  assert.ok(checklist.includes(working), 'a "working" thread is on the TODO list (regression: it used to be dropped)');
+  assert.ok(checklist.includes(seen), 'a "seen" thread is on the TODO list too');
+  assert.ok(!checklist.includes(doneT), 'a "done" thread is not');
 });
 
 test('an agent "status" message keeps the thread in the agent-court checklist; a plain reply does not', async (t) => {
@@ -189,7 +215,7 @@ test('an agent "status" message keeps the thread in the agent-court checklist; a
 
   await fetch(`${BASE}/api/b/${id}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replies: [{ thread_id: userReplied, action: 'ping' }], notes: '' }) });
   const out = textOf(await H.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
-  const checklist = out.split('awaiting YOUR response')[1] || '';
+  const checklist = out.split('need YOU to finish')[1] || '';
   assert.ok(checklist.includes(working), 'a status (still-working) thread stays on the agent checklist');
   assert.ok(checklist.includes(userReplied), 'a thread the user replied to is on the checklist');
   assert.ok(!checklist.includes(answered), 'a thread the agent already replied to (user\'s court) is NOT on the checklist');
@@ -270,7 +296,7 @@ test('deferred threads: pickup hints reach the agent, a user reply un-parks, and
   const out = textOf(await D.client.callTool({ name: 'wait_for_feedback', arguments: { timeout_seconds: 15 } }));
   assert.match(out, /deferred thread\(s\) parked by you/, 'wait_for_feedback reports parked threads');
   assert.ok(out.includes('resume after the stack rebases'), 'the pickup hint is injected into the result');
-  const checklist = out.split('awaiting YOUR response')[1].split('deferred thread')[0];
+  const checklist = out.split('need YOU to finish')[1].split('deferred thread')[0];
   assert.ok(checklist.includes(replied), 'the un-parked thread is on the agent checklist');
   assert.ok(!checklist.includes(parked), 'a still-parked thread is not on the reply checklist');
 });
