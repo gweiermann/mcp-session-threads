@@ -194,8 +194,9 @@
       .bubble.agent { align-self: flex-start; background: var(--panel-2); border-bottom-left-radius: 5px; }
       .bubble.user { align-self: flex-end; background: var(--accent-weak); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); border-bottom-right-radius: 5px; }
       .bubble.user .who { color: var(--green); }
-      /* intent hints: a "status" (still-working) message reads as an inline note, not a prompt */
-      .bubble.agent.msg-status { background: transparent; border-style: dashed; color: var(--muted); }
+      /* intent hints are shown only via the small caption colour — the message
+         body stays a normal, readable agent bubble (the agent puts real content
+         in "working" notes too). */
       .bubble.agent.msg-status .who { color: var(--amber); }
       .bubble.agent.msg-done .who { color: var(--green); }
       .bubble.agent.msg-proposal .who { color: var(--accent); }
