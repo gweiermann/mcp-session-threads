@@ -85,7 +85,23 @@ export function createServer(store, hub, config) {
 
       if (GET && p === '/health') return sendText(res, 200, 'text/plain', 'ok');
       if (GET && p === '/') return sendText(res, 200, 'text/html; charset=utf-8', landingHtml(store, config.baseUrl));
-      if (GET && p === '/markdown.js') return sendText(res, 200, 'application/javascript; charset=utf-8', readFileSync(join(PUBLIC_DIR, 'markdown.js')));
+
+      // static web assets (allowlisted — no path traversal). The board UI, the
+      // component storybook, and the shared ES modules they both import.
+      const JS = 'application/javascript; charset=utf-8';
+      const STATIC = {
+        '/markdown.js': ['markdown.js', JS],
+        '/thread-logic.js': ['thread-logic.js', JS],
+        '/components.js': ['components.js', JS],
+        '/stories.js': ['stories.js', JS],
+        '/board.css': ['board.css', 'text/css; charset=utf-8'],
+        '/storybook': ['storybook.html', 'text/html; charset=utf-8'],
+        '/storybook.html': ['storybook.html', 'text/html; charset=utf-8'],
+      };
+      if (GET && STATIC[p]) {
+        const [file, type] = STATIC[p];
+        return sendText(res, 200, type, readFileSync(join(PUBLIC_DIR, file)));
+      }
 
       // create-or-get / list boards
       if (POST && p === '/api/boards') {
